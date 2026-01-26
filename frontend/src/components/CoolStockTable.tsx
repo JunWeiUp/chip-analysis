@@ -17,9 +17,11 @@ interface StockData {
 interface CoolStockTableProps {
   data: StockData[];
   onRowHover?: (date: string | null) => void;
+  onRowClick?: (date: string | null) => void;
+  lockedDates?: string[];
 }
 
-const CoolStockTable: React.FC<CoolStockTableProps> = ({ data, onRowHover }) => {
+const CoolStockTable: React.FC<CoolStockTableProps> = ({ data, onRowHover, onRowClick, lockedDates = [] }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -52,12 +54,20 @@ const CoolStockTable: React.FC<CoolStockTableProps> = ({ data, onRowHover }) => 
       .data(data.slice(-50).reverse()) // Show last 50 records
       .enter()
       .append("tr")
-      .attr("class", "border-b border-slate-50 transition-colors hover:bg-slate-50/50 cursor-default")
+      .attr("class", d => {
+        const isLocked = lockedDates.includes(d.date);
+        const lockIndex = lockedDates.indexOf(d.date);
+        const lockClass = lockIndex === 0 ? 'bg-amber-50/50 hover:bg-amber-50' : 'bg-blue-50/50 hover:bg-blue-50';
+        return `border-b border-slate-50 transition-all cursor-default ${isLocked ? lockClass : 'hover:bg-slate-50/50'}`;
+      })
       .on("mouseenter", function(_event, d) {
         onRowHover?.(d.date);
       })
       .on("mouseleave", function() {
         onRowHover?.(null);
+      })
+      .on("click", function(_event, d) {
+        onRowClick?.(d.date);
       });
 
     // Date Cell
@@ -201,8 +211,11 @@ const CoolStockTable: React.FC<CoolStockTableProps> = ({ data, onRowHover }) => 
           .text(`${ratio.toFixed(1)}%`)
           .attr("class", `text-[13px] font-bold ${textColorClass} min-w-[45px]`);
       });
-
-  }, [data, onRowHover]);
+      
+    return () => {
+       d3.select(containerRef.current).selectAll("*").remove();
+     };
+   }, [data, onRowHover, onRowClick, lockedDates]);
 
   if (!data || data.length === 0) {
     return (

@@ -18,26 +18,47 @@ export interface ChartDataPoint extends Record<string, string | number | boolean
   _date?: Date;
 }
 
+export interface BacktestTrade {
+  type: 'buy' | 'sell';
+  date: string;
+  price: number;
+  ratio: number;
+  profit?: number;
+  cumulative_yield?: number;
+}
+
 interface ProfitRatioChartProps {
   data: ChartDataPoint[];
+  trades?: BacktestTrade[];
   hoveredDate: string | null;
+  lockedDates?: string[];
   onHover: (date: string | null) => void;
   onClick: (date: string | null) => void;
+  onDoubleClick?: () => void;
   isLocked: boolean;
   maSettings: MASetting[];
   showCloseLine: boolean;
+  showIndicators?: {
+    vma: boolean;
+    macd: boolean;
+    rsi: boolean;
+  };
   height?: number;
 }
 
 const ProfitRatioChart: React.FC<ProfitRatioChartProps> = ({
   data,
   hoveredDate,
+  lockedDates = [],
   onHover,
   onClick,
+  onDoubleClick,
   isLocked,
   maSettings,
   showCloseLine,
+  showIndicators = { vma: true, macd: false, rsi: false },
   height = 400,
+  trades = [],
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -184,6 +205,37 @@ const ProfitRatioChart: React.FC<ProfitRatioChartProps> = ({
       .attr('opacity', 0.2)
       .attr('rx', 1);
 
+    // 绘制成交量均线
+    if (showIndicators.vma) {
+      const vmaLines = [
+        { key: 'vma5', color: '#94a3b8' },
+        { key: 'vma10', color: '#64748b' }
+      ];
+
+      vmaLines.forEach(line => {
+        const vmaLine = d3.line<ChartDataPoint & { _date: Date }>()
+          .x(d => xScale(d._date))
+          .y(d => {
+            const val = d[line.key];
+            return yScaleVolume(typeof val === 'number' ? val : 0);
+          })
+          .defined(d => {
+            const val = d[line.key];
+            return typeof val === 'number';
+          })
+          .curve(d3.curveMonotoneX);
+
+        g.append('path')
+          .datum(processedData)
+          .attr('class', `vma-line-${line.key}`)
+          .attr('fill', 'none')
+          .attr('stroke', line.color)
+          .attr('stroke-width', 1)
+          .attr('opacity', 0.6)
+          .attr('d', vmaLine);
+      });
+    }
+
     // 2. 绘制获利比例面积图
     const profitArea = d3.area<ChartDataPoint & { _date: Date }>()
       .x(d => xScale(d._date))
@@ -259,11 +311,48 @@ const ProfitRatioChart: React.FC<ProfitRatioChartProps> = ({
         .attr('d', line);
     });
 
-    // 5. 交互层
+    // 5. 绘制回测交易信号
+    if (trades && trades.length > 0) {
+      const tradeMarkers = g.append('g').attr('class', 'trade-markers');
+      
+      trades.forEach((trade) => {
+        const tradeDate = parseDate(trade.date);
+        if (!tradeDate) return;
+        
+        const x = xScale(tradeDate);
+        const y = yScalePrice(trade.price);
+        
+        const isBuy = trade.type === 'buy';
+        
+        // 绘制箭头/三角形
+        tradeMarkers.append('path')
+          .attr('d', isBuy ? 'M-6,8 L0,0 L6,8 Z' : 'M-6,-8 L0,0 L6,-8 Z')
+          .attr('transform', `translate(${x}, ${isBuy ? y + 15 : y - 15})`)
+          .attr('fill', isBuy ? '#ef4444' : '#22c55e')
+          .attr('stroke', '#fff')
+          .attr('stroke-width', 1);
+          
+        // 绘制价格文本
+        tradeMarkers.append('text')
+          .attr('x', x)
+          .attr('y', isBuy ? y + 28 : y - 22)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', '10px')
+          .attr('font-weight', 'bold')
+          .attr('fill', isBuy ? '#ef4444' : '#22c55e')
+          .text(`${isBuy ? 'B' : 'S'} ${trade.price.toFixed(2)}`);
+      });
+    }
+
+    // 6. 交互层
     const interactionGroup = g.append('g').attr('class', 'interaction-layer');
     
     // 十字光标
     const crosshair = interactionGroup.append('g').style('display', 'none');
+    
+    // 锁定状态的垂直线 (支持多条)
+    const lockLinesGroup = interactionGroup.append('g').attr('class', 'lock-lines');
+
     const verticalLine = crosshair.append('line')
       .attr('stroke', '#cbd5e1')
       .attr('stroke-width', 1)
@@ -366,36 +455,55 @@ const ProfitRatioChart: React.FC<ProfitRatioChartProps> = ({
         .style('top', `${top}px`);
     };
 
-    // 响应外部 hover 状态
-    if (hoveredDate) {
-      const d = processedData.find(item => item.date === hoveredDate);
+    // 响应外部 hover 状态和锁定状态
+    const renderActiveDate = (date: string | null, isLockLine: boolean = false, color: string = '#cbd5e1') => {
+      const d = processedData.find(item => item.date === date);
       if (d) {
-        crosshair.style('display', null);
-        verticalLine.attr('x1', xScale(d._date)).attr('x2', xScale(d._date));
-        priceDot.attr('cx', xScale(d._date)).attr('cy', yScalePrice(d.close_num));
-        profitDot.attr('cx', xScale(d._date)).attr('cy', yScaleProfit(d.profit_ratio));
-        // 这里不更新 tooltip 避免循环或者位置错误，通常外部同步只需显示十字线
+        if (isLockLine) {
+          lockLinesGroup.append('line')
+            .attr('stroke', color)
+            .attr('stroke-width', 2)
+            .attr('x1', xScale(d._date))
+            .attr('x2', xScale(d._date))
+            .attr('y1', 0)
+            .attr('y2', innerHeight);
+        } else {
+          crosshair.style('display', null);
+          verticalLine.attr('x1', xScale(d._date)).attr('x2', xScale(d._date));
+          priceDot.attr('cx', xScale(d._date)).attr('cy', yScalePrice(d.close_num));
+          profitDot.attr('cx', xScale(d._date)).attr('cy', yScaleProfit(d.profit_ratio));
+        }
       }
+    };
+
+    if (hoveredDate) {
+      renderActiveDate(hoveredDate);
+    } else if (lockedDates.length > 0) {
+      // 如果没有 hover，但有锁定，显示最后一个锁定的点（对应右侧筹码）
+      renderActiveDate(lockedDates[lockedDates.length - 1]);
     } else {
       crosshair.style('display', 'none');
       tooltip.style('display', 'none');
     }
 
+    // 处理锁定日期显示
+    lockLinesGroup.selectAll('*').remove();
+    lockedDates.forEach((date, i) => {
+      renderActiveDate(date, true, i === 0 ? '#f59e0b' : '#3b82f6');
+    });
+    
     interactionGroup.append('rect')
       .attr('width', width)
       .attr('height', innerHeight)
       .attr('fill', 'transparent')
       .on('mousemove', (event) => {
-        if (isLocked) return;
         const [mouseX] = d3.pointer(event);
         updateHoverState(mouseX);
       })
       .on('mouseleave', () => {
-        if (!isLocked) {
-          onHover(null);
-          crosshair.style('display', 'none');
-          tooltip.style('display', 'none');
-        }
+        onHover(null);
+        crosshair.style('display', 'none');
+        tooltip.style('display', 'none');
       })
       .on('click', (event) => {
         const [mouseX] = d3.pointer(event);
@@ -406,12 +514,15 @@ const ProfitRatioChart: React.FC<ProfitRatioChartProps> = ({
         if (!d0 || !d1) return;
         const d = (x0.getTime() - d0._date.getTime() > d1._date.getTime() - x0.getTime()) ? d1 : d0;
         onClick(d.date);
+      })
+      .on('dblclick', () => {
+        onDoubleClick?.();
       });
 
     return () => {
       tooltip.remove();
     };
-  }, [data, hoveredDate, isLocked, maSettings, showCloseLine, height]);
+  }, [data, hoveredDate, lockedDates, isLocked, maSettings, showCloseLine, height, trades]);
 
   return (
     <div ref={containerRef} style={{ width: '100%', height: height, position: 'relative' }}>

@@ -6,25 +6,25 @@ import datetime
 import akshare as ak
 import efinance as ef
 import time
+import diskcache
+from diskcache import Cache
 from typing import List, Dict, Optional
 import numpy as np
 from pydantic import BaseModel
 
 app = FastAPI()
 
-# Cache for stock list
-stock_list_cache = []
-
+# Cache for stock list and data
+cache = Cache('./cache')
+@cache.memoize(expire=86400)  # Cache for 24 hours
 def get_stock_list():
-    global stock_list_cache
-    if not stock_list_cache:
-        try:
-            df = ak.stock_zh_a_spot_em()
-            if df is not None and not df.empty:
-                stock_list_cache = df[['代码', '名称']].to_dict('records')
-        except Exception as e:
-            print(f"Error fetching stock list: {e}")
-    return stock_list_cache
+    try:
+        df = ak.stock_zh_a_spot_em()
+        if df is not None and not df.empty:
+            return df[['代码', '名称']].to_dict('records')
+    except Exception as e:
+        print(f"Error fetching stock list: {e}")
+    return []
 
 # Enable CORS
 app.add_middleware(
@@ -47,6 +47,16 @@ class ChipSettings(BaseModel):
     longTermDays: int = 100
     mediumTermDays: int = 10
     shortTermDays: int = 2
+
+class BacktestRequest(BaseModel):
+    code: str
+    buy_threshold: float
+    sell_threshold: float
+    source: str = "baostock"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    chip_settings: Optional[ChipSettings] = None
+    strategy_type: str = "mean_reversion" # "breakout", "mean_reversion", or "buy_and_hold"
 
 def calculate_advanced_chips(df: pd.DataFrame, settings: ChipSettings, include_all_distributions: bool = False):
     # Ensure columns are numeric and drop rows with missing essential data
@@ -241,20 +251,34 @@ def calculate_advanced_chips(df: pd.DataFrame, settings: ChipSettings, include_a
     df = df.fillna(0)
     return df, last_distribution, range_dist_list, all_distributions, summary_stats, all_summary_stats
 
+@cache.memoize(expire=3600)
+def get_fundamentals_cached(clean_code: str):
+    # Get individual stock info from EastMoney
+    df = ak.stock_individual_info_em(symbol=clean_code)
+    if df is None or df.empty:
+        return {}
+    
+    # Convert dataframe to a more usable dict
+    info = {}
+    for _, row in df.iterrows():
+        info[row['item']] = row['value']
+        
+    # Standardize market cap formatting to "亿" unit
+    for key in ['总市值', '流通市值', '总股本', '流通股本']:
+        if key in info:
+            try:
+                val = float(info[key])
+                # 无论大小，统一转换为亿，并保留2位小数
+                info[key] = f"{val / 100000000:.2f}亿"
+            except:
+                pass
+    return info
+
 @app.get("/api/stock/{code}/fundamentals")
 async def get_stock_fundamentals(code: str):
     clean_code = code.split('.')[-1] if '.' in code else code
     try:
-        # Get individual stock info from EastMoney
-        df = ak.stock_individual_info_em(symbol=clean_code)
-        if df is None or df.empty:
-            return {}
-        
-        # Convert dataframe to a more usable dict
-        info = {}
-        for _, row in df.iterrows():
-            info[row['item']] = row['value']
-            
+        info = get_fundamentals_cached(clean_code)
         return info
     except Exception as e:
         # Fallback if EM fails, try another source or return empty
@@ -281,6 +305,142 @@ async def search_stocks(q: str):
                 break
                 
     return results
+
+@cache.memoize(expire=3600)
+def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end: str):
+    clean_code = code.split('.')[-1] if '.' in code else code
+    if source == "baostock":
+        # Login to baostock
+        lg = bs.login()
+        if lg.error_code != '0':
+            return None
+        
+        try:
+            rs = bs.query_history_k_data_plus(
+                code,
+                "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
+                start_date=fetch_start,
+                end_date=req_end,
+                frequency="d",
+                adjustflag="3" 
+            )
+            
+            if rs.error_code != '0':
+                return None
+            
+            data_list = []
+            while (rs.error_code == '0') & rs.next():
+                data_list.append(rs.get_row_data())
+                
+            if not data_list:
+                return None
+                
+            df = pd.DataFrame(data_list, columns=rs.fields)
+            return df
+        finally:
+            bs.logout()
+    
+    elif source == "ths":
+        # Using akshare for THS/EastMoney data
+        # Detect if it's an ETF
+        is_etf = clean_code.startswith(('51', '56', '58', '15', '16'))
+        prefix = "sh" if clean_code.startswith(('6', '9', '5')) else "sz"
+        ak_code = f"{prefix}{clean_code}"
+        
+        df = None
+        
+        if is_etf:
+            # Try Sina ETF source first (stable)
+            for attempt in range(2):
+                try:
+                    df = ak.fund_etf_hist_sina(symbol=ak_code)
+                    if df is not None and not df.empty:
+                        df['date'] = df['date'].astype(str)
+                        df = df[(df['date'] >= fetch_start) & (df['date'] <= req_end)]
+                        break
+                except:
+                    time.sleep(1)
+            
+            # Fallback to EM ETF source
+            if df is None or df.empty:
+                for attempt in range(2):
+                    try:
+                        df = ak.fund_etf_hist_em(
+                            symbol=clean_code, 
+                            period="daily", 
+                            start_date=fetch_start.replace('-', ''), 
+                            end_date=req_end.replace('-', ''), 
+                            adjust=""
+                        )
+                        if df is not None and not df.empty:
+                            break
+                    except:
+                        time.sleep(1)
+        else:
+            # Stock logic
+            for attempt in range(2):
+                try:
+                    df = ak.stock_zh_a_daily(
+                        symbol=ak_code, 
+                        start_date=fetch_start.replace('-', ''), 
+                        end_date=req_end.replace('-', ''), 
+                        adjust=""
+                    )
+                    if df is not None and not df.empty:
+                        df = df.rename(columns={"turnover": "turn"})
+                        break
+                except:
+                    time.sleep(1)
+            
+            if df is None or df.empty:
+                for attempt in range(2):
+                    try:
+                        df = ak.stock_zh_a_hist(
+                            symbol=clean_code, 
+                            period="daily", 
+                            start_date=fetch_start.replace('-', ''), 
+                            end_date=req_end.replace('-', ''), 
+                            adjust=""
+                        )
+                        if df is not None and not df.empty:
+                            break
+                    except:
+                        time.sleep(1)
+        
+        # Fallback to efinance
+        if df is None or df.empty:
+            try:
+                df = ef.stock.get_quote_history(
+                    clean_code, 
+                    beg=fetch_start.replace('-', ''), 
+                    end=req_end.replace('-', '')
+                )
+                if df is not None and not df.empty:
+                    df = df.rename(columns={
+                        "日期": "date", "开盘": "open", "收盘": "close",
+                        "最高": "high", "最低": "low", "成交量": "volume", "换手率": "turn"
+                    })
+            except:
+                pass
+
+        if df is not None and not df.empty:
+            # Standardize columns
+            rename_map = {
+                "日期": "date", "开盘": "open", "收盘": "close", 
+                "最高": "high", "最低": "low", "成交量": "volume", "换手率": "turn",
+                "turnover": "turn"
+            }
+            df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+            df['date'] = df['date'].astype(str)
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+            if 'turn' not in df.columns:
+                df['turn'] = 1.0 
+            df['turn'] = pd.to_numeric(df['turn'], errors='coerce').fillna(1.0)
+            if df['turn'].max() < 1.0 and df['turn'].max() > 0: 
+                df['turn'] = df['turn'] * 100
+            return df
+            
+    return None
 
 @app.get("/api/stock/{code}")
 async def get_stock_data(
@@ -323,168 +483,10 @@ async def get_stock_data(
     fetch_start = (datetime.datetime.strptime(req_start, '%Y-%m-%d') - datetime.timedelta(days=3*365)).strftime('%Y-%m-%d')
     
     try:
-        if source == "baostock":
-            # Login to baostock
-            lg = bs.login()
-            if lg.error_code != '0':
-                raise HTTPException(status_code=500, detail=f"BaoStock login failed: {lg.error_msg}")
-            
-            try:
-                rs = bs.query_history_k_data_plus(
-                    code,
-                    "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
-                    start_date=fetch_start,
-                    end_date=req_end,
-                    frequency="d",
-                    adjustflag="3" 
-                )
-                
-                if rs.error_code != '0':
-                    raise HTTPException(status_code=404, detail=f"Query failed: {rs.error_msg}")
-                
-                data_list = []
-                while (rs.error_code == '0') & rs.next():
-                    data_list.append(rs.get_row_data())
-                    
-                if not data_list:
-                    raise HTTPException(status_code=404, detail="No data found for the given stock code.")
-                    
-                result_df = pd.DataFrame(data_list, columns=rs.fields)
-            finally:
-                bs.logout()
+        result_df = fetch_history_data_cached(code, source, fetch_start, req_end)
         
-        elif source == "ths":
-            # Using akshare for THS/EastMoney data
-            clean_code = code.split('.')[-1] if '.' in code else code
-            
-            # Detect if it's an ETF
-            is_etf = clean_code.startswith(('51', '56', '58', '15', '16'))
-            prefix = "sh" if clean_code.startswith(('6', '9', '5')) else "sz"
-            ak_code = f"{prefix}{clean_code}"
-            
-            df = None
-            last_error = ""
-            
-            if is_etf:
-                # Try Sina ETF source first (stable)
-                for attempt in range(2):
-                    try:
-                        # Sina fund_etf_hist_sina returns full history
-                        df = ak.fund_etf_hist_sina(symbol=ak_code)
-                        if df is not None and not df.empty:
-                            # Filter by date manually since this API doesn't support start/end
-                            df['date'] = df['date'].astype(str)
-                            df = df[(df['date'] >= fetch_start) & (df['date'] <= req_end)]
-                            break
-                    except Exception as e:
-                        last_error = str(e)
-                        time.sleep(1)
-                
-                # Fallback to EM ETF source
-                if df is None or df.empty:
-                    for attempt in range(2):
-                        try:
-                            df = ak.fund_etf_hist_em(
-                                symbol=clean_code, 
-                                period="daily", 
-                                start_date=fetch_start.replace('-', ''), 
-                                end_date=req_end.replace('-', ''), 
-                                adjust=""
-                            )
-                            if df is not None and not df.empty:
-                                break
-                        except Exception as e:
-                            last_error = f"Sina ETF error: {last_error}; EM ETF error: {str(e)}"
-                            time.sleep(1)
-            else:
-                # Stock logic
-                # Try akshare stock_zh_a_daily (Sina source) which is often more stable
-                for attempt in range(2):
-                    try:
-                        df = ak.stock_zh_a_daily(
-                            symbol=ak_code, 
-                            start_date=fetch_start.replace('-', ''), 
-                            end_date=req_end.replace('-', ''), 
-                            adjust=""
-                        )
-                        if df is not None and not df.empty:
-                            # stock_zh_a_daily already has standard names: date, open, high, low, close, volume, turnover
-                            df = df.rename(columns={"turnover": "turn"})
-                            break
-                    except Exception as e:
-                        last_error = str(e)
-                        time.sleep(1)
-                
-                # Fallback to akshare stock_zh_a_hist (EastMoney source) if Sina fails
-                if df is None or df.empty:
-                    for attempt in range(2):
-                        try:
-                            df = ak.stock_zh_a_hist(
-                                symbol=clean_code, 
-                                period="daily", 
-                                start_date=fetch_start.replace('-', ''), 
-                                end_date=req_end.replace('-', ''), 
-                                adjust=""
-                            )
-                            if df is not None and not df.empty:
-                                break
-                        except Exception as e:
-                            last_error = f"Sina error: {last_error}; EastMoney error: {str(e)}"
-                            time.sleep(1)
-            
-            # Fallback to efinance if both akshare methods fail (works for both stocks and funds)
-            if df is None or df.empty:
-                try:
-                    df = ef.stock.get_quote_history(
-                        clean_code, 
-                        beg=fetch_start.replace('-', ''), 
-                        end=req_end.replace('-', '')
-                    )
-                    if df is not None and not df.empty:
-                        df = df.rename(columns={
-                            "日期": "date",
-                            "开盘": "open",
-                            "收盘": "close",
-                            "最高": "high",
-                            "最低": "low",
-                            "成交量": "volume",
-                            "换手率": "turn"
-                        })
-                except Exception as e:
-                    last_error = f"{last_error}; efinance error: {str(e)}"
-                    time.sleep(1)
-
-            if df is None or df.empty:
-                raise HTTPException(status_code=500, detail=f"THS Data fetch failed: {last_error}")
-            
-            # Standardize columns for any source
-            rename_map = {
-                "日期": "date", "开盘": "open", "收盘": "close", 
-                "最高": "high", "最低": "low", "成交量": "volume", "换手率": "turn",
-                "turnover": "turn"
-            }
-            df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
-            
-            # Ensure date is string format
-            df['date'] = df['date'].astype(str)
-            
-            # Unify volume and turn
-            df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-            
-            # Ensure turn exists (ETFs from Sina might miss it)
-            if 'turn' not in df.columns:
-                df['turn'] = 1.0 
-            
-            df['turn'] = pd.to_numeric(df['turn'], errors='coerce').fillna(1.0)
-            
-            # Unify turnover format: Sina is ratio (0.0026), EM is percentage (0.26)
-            if df['turn'].max() < 1.0 and df['turn'].max() > 0: 
-                df['turn'] = df['turn'] * 100
-                
-            result_df = df
-        
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported data source: {source}")
+        if result_df is None or result_df.empty:
+            raise HTTPException(status_code=404, detail="No data found for the given stock code.")
 
         # Calculate profit ratio and distribution
         result_df, last_distribution, range_distribution, all_distributions, summary_stats, all_summary_stats = calculate_advanced_chips(
@@ -518,6 +520,166 @@ async def get_stock_data(
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/backtest")
+async def run_backtest(req: BacktestRequest):
+    # Use provided chip settings or defaults
+    settings = req.chip_settings or ChipSettings()
+    
+    # Default date range
+    req_end = req.end_date or datetime.date.today().strftime('%Y-%m-%d')
+    req_start = req.start_date or (datetime.date.today() - datetime.timedelta(days=365)).strftime('%Y-%m-%d')
+    
+    # Fetch extra data for chip stabilization (3 years)
+    fetch_start = (datetime.datetime.strptime(req_start, '%Y-%m-%d') - datetime.timedelta(days=3*365)).strftime('%Y-%m-%d')
+    
+    try:
+        df = fetch_history_data_cached(req.code, req.source, fetch_start, req_end)
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail="No data found for the given stock code.")
+        
+        # Calculate profit ratios
+        df, _, _, _, _, _ = calculate_advanced_chips(df, settings, include_all_distributions=False)
+        
+        # Filter for the backtest period
+        mask = (df['date'] >= req_start) & (df['date'] <= req_end)
+        test_df = df[mask].copy()
+        
+        if test_df.empty:
+             raise HTTPException(status_code=400, detail="No data available for the selected date range.")
+        
+        # Simulation
+        initial_cash = 100000.0
+        cash = initial_cash
+        shares = 0.0
+        trades = []
+        yield_curve = []
+        
+        # Each buy uses 10% of initial cash
+        buy_unit_cash = initial_cash * 0.1
+        
+        for i in range(len(test_df)):
+            row = test_df.iloc[i]
+            ratio = row['profit_ratio']
+            price = float(row['close'])
+            date = str(row['date'])
+            
+            # Buy logic
+            should_buy = False
+            if req.strategy_type == "breakout":
+                if ratio >= req.buy_threshold:
+                    should_buy = True
+            elif req.strategy_type == "buy_and_hold":
+                if ratio <= req.buy_threshold:
+                    should_buy = True
+            elif req.strategy_type == "mean_reversion":
+                if ratio <= req.buy_threshold:
+                    should_buy = True
+            
+            if should_buy and cash >= buy_unit_cash:
+                shares_to_buy = buy_unit_cash / price
+                cash -= buy_unit_cash
+                shares += shares_to_buy
+                trades.append({
+                    "type": "buy",
+                    "date": str(date),
+                    "price": price,
+                    "ratio": float(ratio)
+                })
+            
+            # Sell logic
+            should_sell = False
+            is_strategy_sell = False
+            
+            if shares > 0:
+                if req.strategy_type == "breakout":
+                    if ratio <= req.sell_threshold:
+                        should_sell = True
+                        is_strategy_sell = True
+                elif req.strategy_type == "buy_and_hold":
+                    should_sell = False
+                elif req.strategy_type == "mean_reversion":
+                    if ratio >= req.sell_threshold:
+                        should_sell = True
+                        is_strategy_sell = True
+                
+                # Also close position on the last day to calculate final yield
+                is_last_day = (i == len(test_df) - 1)
+                if is_last_day:
+                    should_sell = True
+                
+                if should_sell:
+                    sell_revenue = shares * price
+                    trade_profit_pct = (sell_revenue - (initial_cash - cash)) / (initial_cash - cash) if (initial_cash - cash) > 0 else 0
+                    
+                    if is_strategy_sell or (is_last_day and req.strategy_type != "buy_and_hold"):
+                        trades.append({
+                            "type": "sell",
+                            "date": str(date),
+                            "price": price,
+                            "ratio": float(ratio),
+                            "profit": round(trade_profit_pct * 100, 2)
+                        })
+                    
+                    cash += sell_revenue
+                    shares = 0
+            
+            # Update yield curve (Daily total value)
+            current_total_value = cash + (shares * price)
+            cumulative_yield = (current_total_value - initial_cash) / initial_cash
+            
+            yield_curve.append({
+                "date": date,
+                "yield": round(cumulative_yield * 100, 2)
+            })
+        
+        # Calculate maximum drawdown
+        max_drawdown = 0
+        peak = -999999.0
+        for item in yield_curve:
+            y = item['yield']
+            if y > peak:
+                peak = y
+            drawdown = peak - y
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+        
+        return {
+            "code": req.code,
+            "total_yield": round(cumulative_yield * 100, 2),
+            "trades": trades,
+            "yield_curve": yield_curve,
+            "max_drawdown": round(max_drawdown, 2),
+            "trade_count": len([t for t in trades if t['type'] == 'sell']),
+            "win_rate": round(len([t for t in trades if t.get('profit', 0) > 0]) / max(1, len([t for t in trades if t['type'] == 'sell'])) * 100, 2)
+        }
+        
+        # Calculate maximum drawdown
+        max_drawdown = 0
+        peak = -999
+        for item in yield_curve:
+            y = item['yield']
+            if y > peak:
+                peak = y
+            drawdown = peak - y
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+        
+        return {
+            "code": req.code,
+            "total_yield": round((cumulative_yield - 1) * 100, 2),
+            "trades": trades,
+            "yield_curve": yield_curve,
+            "max_drawdown": round(max_drawdown, 2),
+            "trade_count": len([t for t in trades if t['type'] == 'sell']),
+            "win_rate": round(len([t for t in trades if t.get('profit', 0) > 0]) / max(1, len([t for t in trades if t['type'] == 'sell'])) * 100, 2)
+        }
+        
+    except Exception as e:
+        print(f"Backtest error: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)

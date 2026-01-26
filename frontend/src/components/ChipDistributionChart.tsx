@@ -13,6 +13,7 @@ interface SummaryStats {
   peak_price: number;
   profit_ratio: number;
   asr: number;
+  cost_20: number;
   cost_50: number;
   cost_90: number;
 }
@@ -207,10 +208,14 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
       statsGroup.selectAll('*').remove();
 
       const stats = [
-        { label: '平均成本', value: summaryStats.avg_cost.toFixed(2), color: '#0f172a' },
-        { label: '90%筹码', value: `${summaryStats.conc_90.low.toFixed(2)}-${summaryStats.conc_90.high.toFixed(2)}`, color: '#0f172a' },
-        { label: '集中度', value: `${summaryStats.conc_90.concentration.toFixed(2)}%`, color: '#3b82f6' },
-        { label: '获利比例', value: `${(profitRatio || summaryStats.profit_ratio).toFixed(1)}%`, color: (profitRatio || summaryStats.profit_ratio) > 80 ? '#ef4444' : '#22c55e' }
+        { label: '平均成本', value: (summaryStats.avg_cost || 0).toFixed(2), color: '#0f172a' },
+        { label: '90%筹码', value: `${(summaryStats.conc_90?.low || 0).toFixed(2)}-${(summaryStats.conc_90?.high || 0).toFixed(2)}`, color: '#0f172a' },
+        { label: '集中度', value: `${(summaryStats.conc_90?.concentration || 0).toFixed(2)}%`, color: '#3b82f6' },
+        { label: '获利比例', value: `${(profitRatio !== undefined ? profitRatio : (summaryStats.profit_ratio || 0)).toFixed(1)}%`, color: (profitRatio !== undefined ? profitRatio : (summaryStats.profit_ratio || 0)) > 80 ? '#ef4444' : '#22c55e' },
+        { label: 'ASR(活跃)', value: `${(summaryStats.asr || 0).toFixed(1)}%`, color: '#0f172a' },
+        { label: '90%成本', value: (summaryStats.cost_90 || 0).toFixed(2), color: '#0f172a' },
+        { label: '50%成本', value: (summaryStats.cost_50 || 0).toFixed(2), color: '#0f172a' },
+        { label: '20%成本', value: (summaryStats.cost_20 || 0).toFixed(2), color: '#0f172a' }
       ];
 
       stats.forEach((stat, i) => {

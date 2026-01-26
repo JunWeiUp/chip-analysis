@@ -1,24 +1,79 @@
-INFO:     Started server process [70009]
+INFO:     Started server process [13519]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-INFO:     127.0.0.1:57585 - "GET /api/stock/510050?source=ths&lookback=1 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57588 - "GET /api/stock/600000?source=ths&lookback=1 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57646 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58332 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58348 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58374 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58402 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58402 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58451 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58451 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58485 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58485 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58516 - "GET /api/stock/sh.512890?source=ths&algorithm=triangular&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
 login success!
 logout success!
-INFO:     127.0.0.1:58931 - "GET /api/stock/sh.600000?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&start_date=2023-01-25&end_date=2026-01-25 HTTP/1.1" 200 OK
-INFO:     Shutting down
-INFO:     Waiting for application shutdown.
-INFO:     Application shutdown complete.
-INFO:     Finished server process [70009]
+INFO:     127.0.0.1:57712 - "GET /api/stock/sh.600000?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57713 - "GET /api/stock/sh.600000/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57751 - "OPTIONS /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57751 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58492 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51706 - "OPTIONS /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51706 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53180 - "GET /api/stock/sh.600000?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53181 - "GET /api/stock/sh.600000/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53205 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53462 - "POST /api/backtest HTTP/1.1" 200 OK
+login success!
+logout success!
+INFO:     127.0.0.1:53591 - "GET /api/stock/SH.512890?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53592 - "GET /api/stock/SH.512890/fundamentals HTTP/1.1" 200 OK
+login success!
+logout success!
+INFO:     127.0.0.1:53657 - "GET /api/stock/SH.512890?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2024-09-04&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53659 - "GET /api/stock/SH.512890/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53758 - "GET /api/stock/SH.512890?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2024-09-04&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53759 - "GET /api/stock/SH.512890/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53811 - "GET /api/stock/SH.512890?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2024-09-04&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53812 - "GET /api/stock/SH.512890/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53855 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54278 - "GET /api/stock/SH.512890?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2000-01-01&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54279 - "GET /api/stock/SH.512890/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54435 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54542 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54580 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54622 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54929 - "GET /api/stock/SH.515180?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2000-01-01&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54930 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55002 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55127 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55180 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55235 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55563 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55736 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55816 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55842 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56546 - "GET /api/stock/sh.600000?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56547 - "GET /api/stock/sh.600000/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56612 - "OPTIONS /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56612 - "POST /api/backtest HTTP/1.1" 200 OK
+login success!
+logout success!
+INFO:     127.0.0.1:56664 - "GET /api/stock/SH.515180?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56665 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+login success!
+logout success!
+INFO:     127.0.0.1:56702 - "GET /api/stock/SH.515180?source=baostock&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2000-01-01&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56704 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56747 - "GET /api/stock/SH.515180?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2000-01-01&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56748 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56790 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56846 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56993 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57356 - "GET /api/stock/SH.515180?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57358 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57470 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58060 - "GET /api/stock/SH.515180?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58061 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58105 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58180 - "GET /api/stock/SH.515180?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2000-01-01&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58181 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58211 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58260 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58260 - "POST /api/backtest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58464 - "GET /api/stock/SH.515180?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2025-01-25&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58465 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58498 - "GET /api/stock/SH.515180?source=ths&algorithm=triangular&decay=1&lookback=250&use_turnover=true&decay_factor=1&peakUpperPercent=10&peakLowerPercent=10&showPeakArea=true&longTermDays=100&mediumTermDays=10&shortTermDays=2&start_date=2000-01-01&end_date=2026-01-25&include_all_distributions=true HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58499 - "GET /api/stock/SH.515180/fundamentals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58527 - "POST /api/backtest HTTP/1.1" 200 OK
