@@ -153,6 +153,7 @@ interface BacktestTrade {
   date: string;
   price: number;
   ratio: number;
+  amount: number;
   profit?: number;
   cumulative_yield?: number;
 }
@@ -163,6 +164,8 @@ interface BacktestResult {
   trades: BacktestTrade[];
   yield_curve: { date: string; yield: number }[];
   max_drawdown: number;
+  buy_count: number;
+  sell_count: number;
   trade_count: number;
   win_rate: number;
 }
@@ -1100,8 +1103,12 @@ const App: React.FC = () => {
                       </Card>
                       <Card className="bg-slate-50 border-slate-100 shadow-none">
                         <CardContent className="pt-6">
-                          <p className="text-xs font-medium text-slate-500 mb-1 uppercase tracking-wider">交易次数</p>
-                          <p className="text-2xl font-bold text-slate-900">{backtestResult.trade_count} 次</p>
+                          <p className="text-xs font-medium text-slate-500 mb-1 uppercase tracking-wider">买入 / 卖出</p>
+                          <p className="text-2xl font-bold text-slate-900">
+                            <span className="text-red-600">{backtestResult.buy_count}</span>
+                            <span className="mx-2 text-slate-300">/</span>
+                            <span className="text-green-600">{backtestResult.sell_count}</span>
+                          </p>
                         </CardContent>
                       </Card>
                       <Card className="bg-slate-50 border-slate-100 shadow-none">
@@ -1123,45 +1130,63 @@ const App: React.FC = () => {
                       </CardContent>
                     </Card>
 
-                    <div className="rounded-xl border border-slate-100 overflow-hidden">
-                      <Table>
-                        <TableHeader className="bg-slate-50">
-                          <TableRow>
-                            <TableHead className="w-[100px]">类型</TableHead>
-                            <TableHead>日期</TableHead>
-                            <TableHead>价格</TableHead>
-                            <TableHead>获利比例</TableHead>
-                            <TableHead className="text-right">盈亏 / 累计</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {backtestResult.trades.map((trade: BacktestTrade, idx: number) => (
-                            <TableRow key={idx} className="hover:bg-slate-50/50">
-                              <TableCell>
-                                <Badge variant={trade.type === 'buy' ? 'default' : 'secondary'} className={trade.type === 'buy' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600 text-white'}>
-                                  {trade.type === 'buy' ? '买入' : '卖出'}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="font-medium text-slate-600">{trade.date}</TableCell>
-                              <TableCell className="font-mono">{trade.price.toFixed(2)}</TableCell>
-                              <TableCell>{trade.ratio.toFixed(2)}%</TableCell>
-                              <TableCell className="text-right">
-                                {trade.type === 'sell' && trade.profit !== undefined && (
-                                  <div className="space-y-1">
-                                    <p className={`font-bold ${trade.profit >= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                      {trade.profit > 0 ? '+' : ''}{trade.profit}%
-                                    </p>
-                                    <p className="text-[10px] text-slate-400">
-                                      累计: {trade.cumulative_yield}%
-                                    </p>
-                                  </div>
-                                )}
-                              </TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
+                    <Card className="bg-slate-50 border-slate-100 shadow-none">
+                      <CardHeader className="pb-2 flex flex-row items-center justify-between">
+                        <CardTitle className="text-sm font-semibold text-slate-600">交易明细</CardTitle>
+                        <Badge variant="outline" className="text-[10px]">{backtestResult.trades.length} 条记录</Badge>
+                      </CardHeader>
+                      <CardContent className="p-0">
+                        <div className="max-h-[400px] overflow-y-auto">
+                          <Table>
+                            <TableHeader className="bg-slate-100/50 sticky top-0 z-10 backdrop-blur-sm">
+                              <TableRow>
+                                <TableHead className="w-[80px]">类型</TableHead>
+                                <TableHead>日期</TableHead>
+                                <TableHead>价格</TableHead>
+                                <TableHead>获利比例</TableHead>
+                                <TableHead className="text-right">金额 / 收益</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {backtestResult.trades.map((trade: BacktestTrade, idx: number) => (
+                                <TableRow key={idx} className="hover:bg-white/50 transition-colors">
+                                  <TableCell>
+                                    <Badge 
+                                      variant={trade.type === 'buy' ? 'default' : 'secondary'} 
+                                      className={trade.type === 'buy' 
+                                        ? 'bg-red-500 hover:bg-red-600 border-none' 
+                                        : 'bg-green-500 hover:bg-green-600 text-white border-none'}
+                                    >
+                                      {trade.type === 'buy' ? '买入' : '卖出'}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="font-medium text-slate-600">{trade.date}</TableCell>
+                                  <TableCell className="font-mono text-slate-700">{trade.price.toFixed(2)}</TableCell>
+                                  <TableCell className="text-slate-600">{trade.ratio.toFixed(2)}%</TableCell>
+                                  <TableCell className="text-right">
+                                    <div className="space-y-0.5">
+                                      <p className="text-xs font-medium text-slate-700">
+                                        ¥{trade.amount.toLocaleString()}
+                                      </p>
+                                      {trade.profit !== undefined && (
+                                        <p className={`text-[10px] font-bold ${trade.profit >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                          {trade.profit > 0 ? '+' : ''}{trade.profit}%
+                                          {trade.type === 'sell' && trade.cumulative_yield !== undefined && (
+                                            <span className="ml-1 text-slate-400 font-normal">
+                                              (累计: {trade.cumulative_yield}%)
+                                            </span>
+                                          )}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </CardContent>
+                    </Card>
                   </div>
                 )}
                 

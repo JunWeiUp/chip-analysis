@@ -23,6 +23,7 @@ export interface BacktestTrade {
   date: string;
   price: number;
   ratio: number;
+  amount: number;
   profit?: number;
   cumulative_yield?: number;
 }
