@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import axios from 'axios';
+import type { AxiosResponse } from 'axios';
 import dayjs from 'dayjs';
 import { 
   Calendar as CalendarIcon,
@@ -9,6 +10,8 @@ import {
   LayoutDashboard, 
   Loader2,
   Lock as LockIcon,
+  Maximize2,
+  Minimize2,
   RotateCcw,
   Search, 
   Settings,
@@ -170,10 +173,27 @@ interface BacktestResult {
   win_rate: number;
 }
 
+interface SearchRecord {
+  code: string;
+  name?: string;
+}
+
+interface ExtendedStockData extends StockData {
+  rsi?: number;
+  macd?: number;
+  macd_signal?: number;
+  macd_hist?: number;
+  [key: string]: string | number | boolean | undefined;
+}
+
 const App: React.FC = () => {
   const [stockCode, setStockCode] = useState<string>('sh.600000');
   const [dataSource, setDataSource] = useState<string>('baostock');
   const [loading, setLoading] = useState<boolean>(false);
+  const [suggestions, setSuggestions] = useState<{value: string, label: string}[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState<number>(-1);
+  const suggestionRef = React.useRef<HTMLDivElement>(null);
   const [data, setData] = useState<StockData[]>([]);
   const [summaryStats, setSummaryStats] = useState<SummaryStats | null>(null);
 
@@ -183,33 +203,52 @@ const App: React.FC = () => {
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
   const [lockedDates, setLockedDates] = useState<string[]>([]);
 
-  const handleChartClick = (date: string | null) => {
+  const handleChartClick = useCallback((date: string | null) => {
     if (!date) return;
     
     setLockedDates(prev => {
+      // 如果点击的日期已经在锁定列表中，则移除它（解锁）
       if (prev.includes(date)) {
         const next = prev.filter(d => d !== date);
         toast.info(`已取消锁定日期: ${date}`);
         return next;
-      } else {
-        if (prev.length >= 2) {
-          toast.warning('最多只能锁定两个日期进行对比');
-          return prev;
-        }
-        const next = [...prev, date].sort();
-        toast.success(`已锁定日期: ${date}`);
+      } 
+      
+      // 如果是新日期
+      if (prev.length >= 2) {
+        // 最多锁定两个，采用先进先出策略，替换最早锁定的日期
+        const next = [prev[1], date];
+        toast.success(`已更新锁定日期: ${date}`);
         return next;
       }
+      
+      const next = [...prev, date];
+      toast.success(`已锁定日期: ${date}`);
+      return next;
     });
+  }, []);
+
+  const toggleFullscreen = (chartId: string) => {
+    setFullscreenChart(prev => prev === chartId ? null : chartId);
   };
-  const [searchHistory, setSearchHistory] = useState<string[]>(() => {
+
+  const [searchHistory, setSearchHistory] = useState<SearchRecord[]>(() => {
     const saved = localStorage.getItem('stock_search_history');
-    return saved ? JSON.parse(saved) : [];
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved);
+      // 兼容旧格式 (string[])
+      return parsed.map((item: string | SearchRecord) => 
+        typeof item === 'string' ? { code: item } : item
+      );
+    } catch {
+      return [];
+    }
   });
 
-  const addToHistory = (code: string) => {
+  const addToHistory = (code: string, name?: string) => {
     setSearchHistory(prev => {
-      const next = [code, ...prev.filter(c => c !== code)].slice(0, 10);
+      const next = [{ code, name }, ...prev.filter(item => item.code !== code)].slice(0, 10);
       localStorage.setItem('stock_search_history', JSON.stringify(next));
       return next;
     });
@@ -256,6 +295,7 @@ const App: React.FC = () => {
     to: dayjs().toDate()
   });
   const [drawerVisible, setDrawerVisible] = useState<boolean>(false);
+  const [fullscreenChart, setFullscreenChart] = useState<string | null>(null);
 
   const [backtestLoading, setBacktestLoading] = useState<boolean>(false);
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
@@ -283,6 +323,34 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('backtest_strategy_type', strategyType);
   }, [strategyType]);
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (stockCode.length >= 2 && showSuggestions) {
+        try {
+          const res = await axios.get(`http://localhost:8001/api/search?q=${stockCode}`);
+          setSuggestions(res.data);
+          setActiveSuggestionIndex(-1);
+        } catch (err) {
+          console.error('Search error:', err);
+        }
+      } else {
+        setSuggestions([]);
+        setActiveSuggestionIndex(-1);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [stockCode, showSuggestions]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (suggestionRef.current && !suggestionRef.current.contains(event.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const handleBacktest = async () => {
     if (!stockCode) {
@@ -335,40 +403,65 @@ const App: React.FC = () => {
       return;
     }
 
+    console.log('Fetching data for:', codeToUse);
     setLoading(true);
     setError(null);
-    addToHistory(codeToUse);
     try {
+      // 分开请求以提高鲁棒性
+      const historyPromise = axios.get<ApiResponse>(`http://localhost:8001/api/stock/${codeToUse}`, {
+        params: {
+          source: dataSource,
+          algorithm: settings.algorithm,
+          decay: settings.decay,
+          lookback: settings.lookback,
+          use_turnover: settings.use_turnover,
+          decay_factor: settings.decay_factor,
+          peakUpperPercent: settings.peakUpperPercent,
+          peakLowerPercent: settings.peakLowerPercent,
+          showPeakArea: settings.showPeakArea,
+          longTermDays: settings.longTermDays,
+          mediumTermDays: settings.mediumTermDays,
+          shortTermDays: settings.shortTermDays,
+          start_date: dayjs(dateRange.from).format('YYYY-MM-DD'),
+          end_date: dayjs(dateRange.to).format('YYYY-MM-DD'),
+          include_all_distributions: true,
+        }
+      });
+
+      const fundamentalsPromise = axios.get<StockFundamentals>(`http://localhost:8001/api/stock/${codeToUse}/fundamentals`);
+
       const [historyRes, fundamentalsRes] = await Promise.all([
-        axios.get<ApiResponse>(`http://localhost:8001/api/stock/${codeToUse}`, {
-          params: {
-            source: dataSource,
-            algorithm: settings.algorithm,
-            decay: settings.decay,
-            lookback: settings.lookback,
-            use_turnover: settings.use_turnover,
-            decay_factor: settings.decay_factor,
-            peakUpperPercent: settings.peakUpperPercent,
-            peakLowerPercent: settings.peakLowerPercent,
-            showPeakArea: settings.showPeakArea,
-            longTermDays: settings.longTermDays,
-            mediumTermDays: settings.mediumTermDays,
-            shortTermDays: settings.shortTermDays,
-            start_date: dayjs(dateRange.from).format('YYYY-MM-DD'),
-            end_date: dayjs(dateRange.to).format('YYYY-MM-DD'),
-            include_all_distributions: true,
-          }
-        }),
-        axios.get<StockFundamentals>(`http://localhost:8001/api/stock/${codeToUse}/fundamentals`)
+        historyPromise,
+        fundamentalsPromise.catch(err => {
+            console.error('Fundamentals fetch failed:', err);
+            return { 
+              data: { 
+                info: {}, 
+                groups: {}, 
+                important_keys: [], 
+                error: '无法加载基本面数据: ' + err.message 
+              } 
+            } as unknown as AxiosResponse<StockFundamentals>;
+          })
       ]);
+
+      console.log('History data received:', historyRes.data.history?.length);
+      console.log('Fundamentals response:', fundamentalsRes);
 
       setData(historyRes.data.history || []);
       setDistribution(historyRes.data.distribution || []);
       setAllDistributions(historyRes.data.all_distributions || {});
       setAllSummaryStats(historyRes.data.all_summary_stats || {});
       setSummaryStats(historyRes.data.summary_stats || null);
-      setFundamentals(fundamentalsRes.data);
+      
+      const fundamentalsData = fundamentalsRes.data;
+      setFundamentals(fundamentalsData);
       setHoveredDate(null);
+      
+      // 添加到搜索历史，包含股票名称
+      const info = fundamentalsData?.info || (fundamentalsData as unknown as Record<string, string | number>);
+      const stockName = info?.['股票简称'] as string | undefined;
+      addToHistory(codeToUse, stockName);
       
       toast.success('数据获取成功');
     } catch (err: unknown) {
@@ -387,38 +480,95 @@ const App: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    // 优先显示 hover 日期，其次显示最后一个锁定日期（对应右侧筹码）
-    const activeDate = hoveredDate || (lockedDates.length > 0 ? lockedDates[lockedDates.length - 1] : null);
-    
-    if (activeDate && allDistributions[activeDate]) {
-      setDistribution(allDistributions[activeDate]);
-    } else if (!activeDate && data.length > 0) {
-      const latestDate = data[data.length - 1].date;
-      if (allDistributions[latestDate]) {
-        setDistribution(allDistributions[latestDate]);
-      }
-    }
-    
-    if (activeDate && allSummaryStats[activeDate]) {
-      setSummaryStats(allSummaryStats[activeDate]);
-    } else if (!activeDate && data.length > 0) {
-      const latestDate = data[data.length - 1].date;
-      if (allSummaryStats[latestDate]) {
-        setSummaryStats(allSummaryStats[latestDate]);
-      }
-    }
-  }, [hoveredDate, lockedDates, allDistributions, allSummaryStats, data]);
-
   const activeDate = hoveredDate || (lockedDates.length > 0 ? lockedDates[lockedDates.length - 1] : null);
 
-  const currentClose = activeDate 
-    ? parseFloat(data.find(d => d.date === activeDate)?.close || '0')
-    : (data.length > 0 ? parseFloat(data[data.length - 1].close) : 0);
+  // 筹码分布和统计数据的派生状态，避免在 useEffect 中手动同步导致的延迟
+  const currentDistribution = useMemo(() => {
+    if (activeDate) {
+      // 如果当前日期有数据，直接返回
+      if (allDistributions[activeDate]) return allDistributions[activeDate];
+      
+      // 如果当前日期没数据，寻找最近的有数据的日期（向前查找）
+      const dates = data.map(d => d.date);
+      const currentIndex = dates.indexOf(activeDate);
+      if (currentIndex !== -1) {
+        for (let i = currentIndex; i >= 0; i--) {
+          const d = dates[i];
+          if (allDistributions[d]) return allDistributions[d];
+        }
+      }
+    }
+    
+    if (!activeDate && data.length > 0) {
+      return allDistributions[data[data.length - 1].date] || [];
+    }
+    return distribution; // Fallback to initial distribution
+  }, [activeDate, allDistributions, data, distribution]);
 
-  const currentProfitRatio = (activeDate
-    ? data.find(d => d.date === activeDate)?.profit_ratio
-    : (data.length > 0 ? data[data.length - 1].profit_ratio : 0)) || 0;
+  const currentSummaryStats = useMemo(() => {
+    if (activeDate) {
+      if (allSummaryStats[activeDate]) return allSummaryStats[activeDate];
+      
+      const dates = data.map(d => d.date);
+      const currentIndex = dates.indexOf(activeDate);
+      if (currentIndex !== -1) {
+        for (let i = currentIndex; i >= 0; i--) {
+          const d = dates[i];
+          if (allSummaryStats[d]) return allSummaryStats[d];
+        }
+      }
+    }
+
+    if (!activeDate && data.length > 0) {
+      return allSummaryStats[data[data.length - 1].date] || null;
+    }
+    return summaryStats; // Fallback to initial stats
+  }, [activeDate, allSummaryStats, data, summaryStats]);
+
+  const currentClose = useMemo(() => {
+    const dates = data.map(d => d.date);
+    let targetDate = activeDate;
+    
+    // 如果 activeDate 没数据，找到最近的有筹码数据的日期
+    if (activeDate && !allDistributions[activeDate]) {
+      const currentIndex = dates.indexOf(activeDate);
+      if (currentIndex !== -1) {
+        for (let i = currentIndex; i >= 0; i--) {
+          if (allDistributions[dates[i]]) {
+            targetDate = dates[i];
+            break;
+          }
+        }
+      }
+    }
+
+    const d = targetDate 
+      ? data.find(item => item.date === targetDate)
+      : (data.length > 0 ? data[data.length - 1] : null);
+    return d ? parseFloat(d.close) : 0;
+  }, [activeDate, data, allDistributions]);
+
+  const currentProfitRatio = useMemo(() => {
+    const dates = data.map(d => d.date);
+    let targetDate = activeDate;
+    
+    if (activeDate && !allDistributions[activeDate]) {
+      const currentIndex = dates.indexOf(activeDate);
+      if (currentIndex !== -1) {
+        for (let i = currentIndex; i >= 0; i--) {
+          if (allDistributions[dates[i]]) {
+            targetDate = dates[i];
+            break;
+          }
+        }
+      }
+    }
+
+    const d = targetDate
+      ? data.find(item => item.date === targetDate)
+      : (data.length > 0 ? data[data.length - 1] : null);
+    return d?.profit_ratio || 0;
+  }, [activeDate, data, allDistributions]);
 
   const chartData = (data || []).map((d, i) => {
     const close_num = parseFloat(d.close) || 0;
@@ -455,11 +605,11 @@ const App: React.FC = () => {
       });
     }
 
-    // 计算 MACD (简易版)
-    if (settings.showIndicators.macd) {
-      // 这里只是简单的占位，完整的 MACD 计算通常需要之前的 EMA 值
-      // 为了性能和简单，我们先只处理 VMA，如果用户需要再深入
-    }
+    // 使用后端计算的指标
+    const rsi = (d as ExtendedStockData).rsi;
+    const macd = (d as ExtendedStockData).macd;
+    const macd_signal = (d as ExtendedStockData).macd_signal;
+    const macd_hist = (d as ExtendedStockData).macd_hist;
 
     return { 
       ...d, 
@@ -469,31 +619,57 @@ const App: React.FC = () => {
       close_num,
       volume_num,
       isUp: close_num >= open_num,
+      rsi,
+      macd,
+      macd_signal,
+      macd_hist,
       ...mas,
     };
   });
 
+
   const renderFundamentals = () => {
-    if (!fundamentals) return null;
-
-    // 兼容旧格式
-    const info = fundamentals.info || (fundamentals as unknown as Record<string, string | number>);
-    const groups = fundamentals.groups || {
-      "基本信息": Object.keys(info).filter(k => k !== 'error')
-    };
-
-    if (Object.keys(info).length === 0) {
-      if (fundamentals.error) {
-        return (
-          <Alert variant="destructive" className="mb-6">
-            <Info className="h-4 w-4" />
-            <AlertTitle>基本面数据获取失败</AlertTitle>
-            <AlertDescription>{fundamentals.error}</AlertDescription>
-          </Alert>
-        );
-      }
-      return null;
+    if (!fundamentals) {
+      return (
+        <div className="mb-6 p-4 bg-slate-50 rounded-lg border border-dashed border-slate-200 text-center text-slate-400 text-sm">
+          正在加载或暂无基本面数据...
+        </div>
+      );
     }
+
+    // 处理错误情况
+    if (fundamentals.error) {
+      return (
+        <Alert variant="destructive" className="mb-6">
+          <Info className="h-4 w-4" />
+          <AlertTitle>基本面数据获取失败</AlertTitle>
+          <AlertDescription>{fundamentals.error}</AlertDescription>
+        </Alert>
+      );
+    }
+
+    // 兼容逻辑：后端可能直接返回 info 内容，也可能返回包含 info 的对象
+    const info = fundamentals.info || (fundamentals as unknown as Record<string, string | number>);
+    
+    // 检查是否有实际内容 (排除掉包装字段)
+    const infoKeys = Object.keys(info).filter(k => !['info', 'groups', 'important_keys', 'error'].includes(k));
+    const hasValidInfo = infoKeys.length > 0 && infoKeys.some(k => 
+      info[k] !== undefined && 
+      info[k] !== null &&
+      info[k] !== ''
+    );
+
+    if (!hasValidInfo) {
+      return (
+        <div className="mb-6 p-4 bg-slate-50 rounded-lg border border-dashed border-slate-200 text-center text-slate-400 text-sm">
+          未查询到该股票的详细基本面信息
+        </div>
+      );
+    }
+
+    const groups = fundamentals.groups || {
+      "基本信息": infoKeys
+    };
 
     return (
       <Card className="border-none shadow-sm overflow-hidden">
@@ -612,15 +788,75 @@ const App: React.FC = () => {
 
                 <div className="space-y-2">
                   <Label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">股票代码</Label>
-                  <div className="relative group">
+                  <div className="relative group" ref={suggestionRef}>
                     <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                     <Input 
                       value={stockCode}
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setStockCode(e.target.value.toUpperCase())}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                        setStockCode(e.target.value.toUpperCase());
+                        setShowSuggestions(true);
+                      }}
+                      onFocus={() => setShowSuggestions(true)}
                       placeholder={dataSource === 'baostock' ? "sh.600000" : "600000"}
                       className="h-10 pl-10 pr-10 bg-slate-50/50 border-slate-200 transition-all focus:ring-2 focus:ring-primary/20 hover:border-primary/30"
-                      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && fetchData()}
+                      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                        if (e.key === 'Enter') {
+                          if (activeSuggestionIndex >= 0 && suggestions[activeSuggestionIndex]) {
+                            const selected = suggestions[activeSuggestionIndex];
+                            setStockCode(selected.value);
+                            setShowSuggestions(false);
+                            fetchData(selected.value);
+                          } else {
+                            fetchData();
+                            setShowSuggestions(false);
+                          }
+                        } else if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setActiveSuggestionIndex(prev => {
+                            const next = prev < suggestions.length - 1 ? prev + 1 : prev;
+                            // 确保选中的元素在视图中
+                            const element = document.getElementById(`suggestion-${next}`);
+                            element?.scrollIntoView({ block: 'nearest' });
+                            return next;
+                          });
+                        } else if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setActiveSuggestionIndex(prev => {
+                            const next = prev > 0 ? prev - 1 : -1;
+                            // 确保选中的元素在视图中
+                            const element = document.getElementById(`suggestion-${next}`);
+                            element?.scrollIntoView({ block: 'nearest' });
+                            return next;
+                          });
+                        } else if (e.key === 'Escape') {
+                          setShowSuggestions(false);
+                        }
+                      }}
                     />
+                    {showSuggestions && suggestions.length > 0 && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-md shadow-lg max-h-60 overflow-y-auto overflow-x-hidden">
+                        {suggestions.map((s, index) => (
+                          <div
+                            key={s.value}
+                            id={`suggestion-${index}`}
+                            className={`px-4 py-2 cursor-pointer text-sm flex justify-between items-center transition-colors ${
+                              index === activeSuggestionIndex ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-slate-50 text-slate-700'
+                            }`}
+                            onClick={() => {
+                              setStockCode(s.value);
+                              setShowSuggestions(false);
+                              fetchData(s.value);
+                            }}
+                            onMouseEnter={() => setActiveSuggestionIndex(index)}
+                          >
+                            <div className="flex items-center gap-2 overflow-hidden">
+                              <span className="truncate">{s.label}</span>
+                            </div>
+                            <span className="text-[10px] opacity-40 font-mono ml-4 flex-shrink-0">{s.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {searchHistory.length > 0 && (
                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                          <History className="h-4 w-4 text-slate-300" />
@@ -629,16 +865,17 @@ const App: React.FC = () => {
                    </div>
                    {searchHistory.length > 0 && (
                      <div className="flex flex-wrap gap-2 mt-2">
-                       {searchHistory.map(code => (
+                       {searchHistory.map(item => (
                           <button
-                            key={code}
+                            key={item.code}
                             onClick={() => {
-                              setStockCode(code);
-                              fetchData(code);
+                              setStockCode(item.code);
+                              fetchData(item.code);
                             }}
-                            className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-500 hover:bg-primary/10 hover:text-primary transition-colors border border-slate-200"
+                            className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-500 hover:bg-primary/10 hover:text-primary transition-colors border border-slate-200 flex items-center gap-1"
                           >
-                            {code}
+                            <span>{item.code}</span>
+                            {item.name && <span className="text-slate-400 font-normal">| {item.name}</span>}
                           </button>
                         ))}
                        <button
@@ -743,10 +980,10 @@ const App: React.FC = () => {
         )}
 
         {renderFundamentals()}
-
+        
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
           <div className="xl:col-span-8 space-y-6">
-            <Card className="border-none shadow-sm overflow-hidden">
+            <Card className={`border-none shadow-sm overflow-hidden ${fullscreenChart === 'trend' ? 'fixed inset-0 z-[100] m-0 rounded-none' : ''}`}>
               <CardHeader className="pb-2 border-b border-slate-50">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -754,6 +991,14 @@ const App: React.FC = () => {
                     <CardTitle className="text-base font-semibold">趋势走势分析</CardTitle>
                   </div>
                   <div className="flex items-center gap-3">
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className="h-8 w-8 p-0 text-slate-500 hover:text-primary"
+                      onClick={() => toggleFullscreen('trend')}
+                    >
+                      {fullscreenChart === 'trend' ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                    </Button>
                     <Drawer open={drawerVisible} onOpenChange={setDrawerVisible}>
                       <DrawerTrigger asChild>
                         <Button variant="ghost" size="sm" className="h-8 px-2 text-slate-500 hover:text-primary hover:bg-primary/5">
@@ -1015,8 +1260,8 @@ const App: React.FC = () => {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="p-6">
-                <div className="h-[450px] w-full">
+              <CardContent className={`p-6 ${fullscreenChart === 'trend' ? 'h-[calc(100vh-64px)] overflow-hidden' : ''}`}>
+                <div className={fullscreenChart === 'trend' ? 'h-full w-full' : 'h-[450px] w-full'}>
                   <ProfitRatioChart 
                     data={chartData} 
                     trades={backtestResult?.trades}
@@ -1025,11 +1270,11 @@ const App: React.FC = () => {
                     onHover={setHoveredDate}
                     onClick={handleChartClick}
                     onDoubleClick={() => setLockedDates([])}
-                    isLocked={lockedDates.length > 0}
+                    isLocked={lockedDates.length >= 2}
                     maSettings={settings.maSettings}
                     showIndicators={settings.showIndicators}
                     showCloseLine={settings.showCloseLine}
-                    height={450}
+                    height={fullscreenChart === 'trend' ? undefined : 450}
                   />
                 </div>
               </CardContent>
@@ -1119,13 +1364,24 @@ const App: React.FC = () => {
                       </Card>
                     </div>
 
-                    <Card className="bg-slate-50 border-slate-100 shadow-none">
-                      <CardHeader className="pb-2">
+                    <Card className={`bg-slate-50 border-slate-100 shadow-none ${fullscreenChart === 'yield' ? 'fixed inset-0 z-[100] m-0 rounded-none bg-white' : ''}`}>
+                      <CardHeader className="pb-2 flex flex-row items-center justify-between">
                         <CardTitle className="text-sm font-semibold text-slate-600">收益率走势</CardTitle>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-8 w-8 p-0 text-slate-500 hover:text-primary"
+                          onClick={() => toggleFullscreen('yield')}
+                        >
+                          {fullscreenChart === 'yield' ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                        </Button>
                       </CardHeader>
-                      <CardContent>
-                        <div className="h-[200px] w-full">
-                          <BacktestYieldChart data={backtestResult.yield_curve} />
+                      <CardContent className={fullscreenChart === 'yield' ? 'h-[calc(100vh-64px)] overflow-hidden' : ''}>
+                        <div className={fullscreenChart === 'yield' ? 'h-full w-full' : 'h-[200px] w-full'}>
+                          <BacktestYieldChart 
+                            data={backtestResult.yield_curve} 
+                            height={fullscreenChart === 'yield' ? undefined : 200}
+                          />
                         </div>
                       </CardContent>
                     </Card>
@@ -1216,47 +1472,62 @@ const App: React.FC = () => {
           </div>
 
           <div className="xl:col-span-4 space-y-6">
-            <Card className="border-none shadow-sm">
+            <Card className={`border-none shadow-sm ${fullscreenChart === 'chips' ? 'fixed inset-0 z-[100] m-0 rounded-none bg-white' : ''}`}>
               <CardHeader className="pb-3 border-b border-slate-50">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <TrendingUp className="h-5 w-5 text-primary" />
                     <CardTitle className="text-base font-semibold">筹码分布对比</CardTitle>
                   </div>
-                  {lockedDates.length === 2 && (
-                    <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded uppercase">对比中</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className="h-8 w-8 p-0 text-slate-500 hover:text-primary"
+                      onClick={() => toggleFullscreen('chips')}
+                    >
+                      {fullscreenChart === 'chips' ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                    </Button>
+                    {lockedDates.length === 2 && (
+                      <span className="text-[10px] font-bold text-blue-500 bg-blue-50 px-2 py-0.5 rounded uppercase">对比中</span>
+                    )}
+                  </div>
                 </div>
               </CardHeader>
-              <CardContent className="pt-6">
-                <div className={lockedDates.length === 2 ? "grid grid-cols-2 gap-2 h-[500px]" : "h-[500px]"}>
+              <CardContent className={`pt-6 ${fullscreenChart === 'chips' ? 'h-[calc(100vh-64px)] overflow-hidden' : ''}`}>
+                <div className={fullscreenChart === 'chips' ? 'h-full w-full' : (lockedDates.length === 2 ? "grid grid-cols-2 gap-2 h-[500px]" : "h-[500px]")}>
                   {lockedDates.length === 2 ? (
                     <>
                       <div className="flex flex-col">
                         <div className="text-[10px] font-medium text-slate-400 mb-2 text-center">日期: {lockedDates[0]}</div>
                         <ChipDistributionChart 
+                          key={`locked-0-${lockedDates[0]}`}
                           data={allDistributions[lockedDates[0]] || []} 
                           currentClose={parseFloat(data.find(d => d.date === lockedDates[0])?.close || '0')}
                           summaryStats={allSummaryStats[lockedDates[0]]}
                           profitRatio={data.find(d => d.date === lockedDates[0])?.profit_ratio}
+                          height={fullscreenChart === 'chips' ? undefined : 400}
                         />
                       </div>
                       <div className="flex flex-col border-l border-slate-100 pl-2">
                         <div className="text-[10px] font-medium text-slate-400 mb-2 text-center">日期: {lockedDates[1]}</div>
                         <ChipDistributionChart 
+                          key={`locked-1-${lockedDates[1]}`}
                           data={allDistributions[lockedDates[1]] || []} 
                           currentClose={parseFloat(data.find(d => d.date === lockedDates[1])?.close || '0')}
                           summaryStats={allSummaryStats[lockedDates[1]]}
                           profitRatio={data.find(d => d.date === lockedDates[1])?.profit_ratio}
+                          height={fullscreenChart === 'chips' ? undefined : 400}
                         />
                       </div>
                     </>
                   ) : (
                     <ChipDistributionChart 
-                      data={distribution} 
+                      data={currentDistribution} 
                       currentClose={currentClose}
-                      summaryStats={summaryStats}
+                      summaryStats={currentSummaryStats}
                       profitRatio={currentProfitRatio}
+                      height={fullscreenChart === 'chips' ? undefined : 400}
                     />
                   )}
                 </div>
@@ -1268,47 +1539,47 @@ const App: React.FC = () => {
                 <CardTitle className="text-base font-semibold">筹码统计概览</CardTitle>
               </CardHeader>
               <CardContent className="pt-6">
-                {summaryStats ? (
+                {currentSummaryStats ? (
                   <div className="space-y-4">
                     <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50">
                       <span className="text-sm text-slate-500">平均成本</span>
-                      <span className="font-bold text-slate-900">{summaryStats.avg_cost.toFixed(2)}</span>
+                      <span className="font-bold text-slate-900">{currentSummaryStats.avg_cost.toFixed(2)}</span>
                     </div>
                     <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50">
                       <span className="text-sm text-slate-500">获利比例</span>
-                      <span className={`font-bold ${summaryStats.profit_ratio > 50 ? 'text-red-600' : 'text-green-600'}`}>
-                        {summaryStats.profit_ratio.toFixed(2)}%
+                      <span className={`font-bold ${currentSummaryStats.profit_ratio > 50 ? 'text-red-600' : 'text-green-600'}`}>
+                        {currentSummaryStats.profit_ratio.toFixed(2)}%
                       </span>
                     </div>
                     <Separator />
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-semibold text-slate-400 uppercase">90% 筹码集中度</span>
-                        <span className="text-xs font-bold text-slate-600">{summaryStats.conc_90.concentration.toFixed(2)}%</span>
+                        <span className="text-xs font-bold text-slate-600">{currentSummaryStats.conc_90.concentration.toFixed(2)}%</span>
                       </div>
                       <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
                         <div 
                           className="h-full bg-primary" 
-                          style={{ width: `${Math.min(100, summaryStats.conc_90.concentration)}%` }}
+                          style={{ width: `${Math.min(100, currentSummaryStats.conc_90.concentration)}%` }}
                         />
                       </div>
                       <p className="text-[11px] text-slate-500 text-right">
-                        范围: {summaryStats.conc_90.low.toFixed(2)} - {summaryStats.conc_90.high.toFixed(2)}
+                        范围: {currentSummaryStats.conc_90.low.toFixed(2)} - {currentSummaryStats.conc_90.high.toFixed(2)}
                       </p>
                     </div>
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-semibold text-slate-400 uppercase">70% 筹码集中度</span>
-                        <span className="text-xs font-bold text-slate-600">{summaryStats.conc_70.concentration.toFixed(2)}%</span>
+                        <span className="text-xs font-bold text-slate-600">{currentSummaryStats.conc_70.concentration.toFixed(2)}%</span>
                       </div>
                       <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
                         <div 
                           className="h-full bg-primary/70" 
-                          style={{ width: `${Math.min(100, summaryStats.conc_70.concentration)}%` }}
+                          style={{ width: `${Math.min(100, currentSummaryStats.conc_70.concentration)}%` }}
                         />
                       </div>
                       <p className="text-[11px] text-slate-500 text-right">
-                        范围: {summaryStats.conc_70.low.toFixed(2)} - {summaryStats.conc_70.high.toFixed(2)}
+                        范围: {currentSummaryStats.conc_70.low.toFixed(2)} - {currentSummaryStats.conc_70.high.toFixed(2)}
                       </p>
                     </div>
                   </div>

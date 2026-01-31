@@ -20,10 +20,14 @@ const BacktestYieldChart: React.FC<BacktestYieldChartProps> = ({ data, height = 
 
     const margin = { top: 10, right: 40, bottom: 25, left: 40 };
     const width = containerRef.current.clientWidth - margin.left - margin.right;
-    const innerHeight = height - margin.top - margin.bottom;
+    const currentHeight = height || containerRef.current.clientHeight || 200;
+    const innerHeight = currentHeight - margin.top - margin.bottom;
 
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove();
+
+    svg.attr('width', width + margin.left + margin.right)
+       .attr('height', currentHeight);
 
     const g = svg
       .append('g')
@@ -172,8 +176,8 @@ const BacktestYieldChart: React.FC<BacktestYieldChartProps> = ({ data, height = 
   }, [data, height]);
 
   return (
-    <div ref={containerRef} style={{ width: '100%', height: height }}>
-      <svg ref={svgRef} width="100%" height={height}></svg>
+    <div ref={containerRef} style={{ width: '100%', height: height || '100%' }}>
+      <svg ref={svgRef} width="100%" height={height || '100%'}></svg>
     </div>
   );
 };

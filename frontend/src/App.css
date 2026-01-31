@@ -20,6 +20,32 @@ body {
   height: 6px;
 }
 
+.fullscreen-card {
+  position: fixed !important;
+  top: 0;
+  left: 0;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 9999;
+  margin: 0 !important;
+  border-radius: 0 !important;
+  background: white;
+  display: flex;
+  flex-direction: column;
+}
+
+.fullscreen-card .card-content-wrapper {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.fullscreen-card .chart-container-full {
+  flex: 1;
+  width: 100%;
+}
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }

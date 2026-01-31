@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useId } from 'react';
 import * as d3 from 'd3';
 
 interface ChipDistribution {
@@ -37,26 +37,35 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const chartId = useId().replace(/:/g, ''); // Remove colons as they are not valid in IDs for all browsers
+  const profitGradientId = `profit-gradient-${chartId}`;
+  const lossGradientId = `loss-gradient-${chartId}`;
 
   useEffect(() => {
-    if (!containerRef.current || !data || data.length === 0) return;
+    if (!containerRef.current || !svgRef.current) return;
+
+    const svg = d3.select(svgRef.current);
+    
+    // Clear SVG if no data
+    if (!data || data.length === 0) {
+      svg.selectAll('*').remove();
+      return;
+    }
 
     const margin = { top: 10, right: 30, bottom: 30, left: 50 };
     const chartWidth = (width || containerRef.current.clientWidth) - margin.left - margin.right;
-    const chartHeight = height - margin.top - margin.bottom;
+    const chartHeight = (height || containerRef.current.clientHeight || 400) - margin.top - margin.bottom;
 
-    const svg = d3.select(svgRef.current);
     svg.attr('width', chartWidth + margin.left + margin.right)
        .attr('height', chartHeight + margin.top + margin.bottom);
 
     let g = svg.select<SVGGElement>('g.main-group');
     if (g.empty()) {
       g = svg.append('g')
-        .attr('class', 'main-group')
-        .attr('transform', `translate(${margin.left},${margin.top})`);
+        .attr('class', 'main-group');
       
       // Add axes groups
-      g.append('g').attr('class', 'x-axis').attr('transform', `translate(0,${chartHeight})`);
+      g.append('g').attr('class', 'x-axis');
       g.append('g').attr('class', 'y-axis');
       
       // Add price line group
@@ -69,19 +78,23 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
       const defs = svg.append('defs');
       
       const profitGradient = defs.append('linearGradient')
-        .attr('id', 'profit-gradient')
+        .attr('id', profitGradientId)
         .attr('x1', '0%').attr('y1', '0%')
         .attr('x2', '100%').attr('y2', '0%');
       profitGradient.append('stop').attr('offset', '0%').attr('stop-color', '#ef4444').attr('stop-opacity', 0.6);
       profitGradient.append('stop').attr('offset', '100%').attr('stop-color', '#ef4444').attr('stop-opacity', 0.9);
 
       const lossGradient = defs.append('linearGradient')
-        .attr('id', 'loss-gradient')
+        .attr('id', lossGradientId)
         .attr('x1', '0%').attr('y1', '0%')
         .attr('x2', '100%').attr('y2', '0%');
       lossGradient.append('stop').attr('offset', '0%').attr('stop-color', '#22c55e').attr('stop-opacity', 0.6);
       lossGradient.append('stop').attr('offset', '100%').attr('stop-color', '#22c55e').attr('stop-opacity', 0.9);
     }
+
+    // Always update transforms in case width/height changed
+    g.attr('transform', `translate(${margin.left},${margin.top})`);
+    g.select('.x-axis').attr('transform', `translate(0,${chartHeight})`);
 
     // Scales
     const yScale = d3.scaleLinear()
@@ -146,7 +159,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
       .attr('height', barHeight)
       .attr('width', d => xScale(d.volume))
       .attr('rx', 1)
-      .attr('fill', d => d.price < currentClose ? 'url(#profit-gradient)' : 'url(#loss-gradient)');
+      .attr('fill', d => d.price < currentClose ? `url(#${profitGradientId})` : `url(#${lossGradientId})`);
 
     // Price Line
     const priceLineGroup = g.select('.price-line-group');
@@ -236,7 +249,7 @@ const ChipDistributionChart: React.FC<ChipDistributionChartProps> = ({
   }, [data, currentClose, height, width, summaryStats, profitRatio]);
 
   return (
-    <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: height }}>
+    <div ref={containerRef} style={{ width: '100%', height: '100%', minHeight: height || '100%' }}>
       <svg ref={svgRef} style={{ overflow: 'visible' }} />
     </div>
   );

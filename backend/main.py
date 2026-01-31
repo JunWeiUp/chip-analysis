@@ -6,22 +6,37 @@ import datetime
 import akshare as ak
 import efinance as ef
 import time
-import diskcache
 from diskcache import Cache
-from typing import List, Dict, Optional
+from typing import Optional
 import numpy as np
 from pydantic import BaseModel
+
+# 外部调用日志包装器
+def log_external_api(api_name: str, func, *args, **kwargs):
+    start_time = time.time()
+    print(f"[{datetime.datetime.now()}] >>> EXTERNAL CALL START: {api_name}")
+    try:
+        result = func(*args, **kwargs)
+        duration = time.time() - start_time
+        print(f"[{datetime.datetime.now()}] <<< EXTERNAL CALL END: {api_name} | Duration: {duration:.2f}s | Status: Success")
+        return result
+    except Exception as e:
+        duration = time.time() - start_time
+        print(f"[{datetime.datetime.now()}] <<< EXTERNAL CALL END: {api_name} | Duration: {duration:.2f}s | Status: Error | Msg: {str(e)}")
+        raise e
 
 app = FastAPI()
 
 # Cache for stock list and data
 cache = Cache('./cache')
-@cache.memoize(expire=86400)  # Cache for 24 hours
+@cache.memoize(expire=3600)
 def get_stock_list():
     try:
-        df = ak.stock_zh_a_spot_em()
+        # 使用更稳定的接口获取股票列表
+        df = log_external_api("akshare.stock_info_a_code_name", ak.stock_info_a_code_name)
         if df is not None and not df.empty:
-            return df[['代码', '名称']].to_dict('records')
+            # 该接口返回的列名是 'code' 和 'name'
+            return df.rename(columns={'code': '代码', 'name': '名称'})[['代码', '名称']].to_dict('records')
     except Exception as e:
         print(f"Error fetching stock list: {e}")
     return []
@@ -83,7 +98,6 @@ def calculate_advanced_chips(df: pd.DataFrame, settings: ChipSettings, include_a
     
     num_buckets = 500
     price_bins = np.linspace(min_price, max_price, num_buckets)
-    bin_width = price_bins[1] - price_bins[0]
     
     chips = np.zeros(num_buckets)
     profit_ratios = []
@@ -247,6 +261,21 @@ def calculate_advanced_chips(df: pd.DataFrame, settings: ChipSettings, include_a
     # Calculate summary stats for the latest distribution
     summary_stats = get_stats_for_chips(chips, closes[-1])
 
+    # Calculate additional technical indicators
+    # 1. RSI (14)
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    # 2. MACD (12, 26, 9)
+    exp1 = df['close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['close'].ewm(span=26, adjust=False).mean()
+    df['macd'] = exp1 - exp2
+    df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+    df['macd_hist'] = df['macd'] - df['macd_signal']
+
     # Replace any NaN in the whole dataframe before returning
     df = df.fillna(0)
     return df, last_distribution, range_dist_list, all_distributions, summary_stats, all_summary_stats
@@ -257,7 +286,7 @@ def get_fundamentals_cached(clean_code: str):
     
     # 1. 优先尝试从 efinance 获取最新行情（支持股票和 ETF）
     try:
-        quote_df = ef.stock.get_latest_quote(clean_code)
+        quote_df = log_external_api(f"efinance.stock.get_latest_quote({clean_code})", ef.stock.get_latest_quote, clean_code)
         if quote_df is not None and not quote_df.empty:
             row = quote_df.iloc[0]
             info = {
@@ -286,7 +315,7 @@ def get_fundamentals_cached(clean_code: str):
             info["行业"] = "ETF/基金"
         try:
             # 获取基金名称和类型
-            df_name = ak.fund_name_em()
+            df_name = log_external_api("akshare.fund_name_em", ak.fund_name_em)
             fund_row = df_name[df_name['基金代码'] == clean_code]
             if not fund_row.empty:
                 info["行业"] = fund_row.iloc[0]['基金类型']
@@ -297,7 +326,7 @@ def get_fundamentals_cached(clean_code: str):
     else:
         try:
             # 股票额外信息：行业、总股本等
-            stock_info_df = ak.stock_individual_info_em(symbol=clean_code)
+            stock_info_df = log_external_api(f"akshare.stock_individual_info_em({clean_code})", ak.stock_individual_info_em, symbol=clean_code)
             if stock_info_df is not None and not stock_info_df.empty:
                 for _, row in stock_info_df.iterrows():
                     item = row['item']
@@ -348,7 +377,26 @@ def get_fundamentals_cached(clean_code: str):
         else:
             clean_info[key] = str(v)
                 
-    return clean_info
+    # 返回结构化数据以匹配前端接口
+    important_keys = ["最新价", "涨跌幅", "换手率", "成交额", "行业"]
+    groups = {
+        "基本行情": ["最新价", "涨跌幅", "最高", "最低", "今开", "昨收", "成交量", "成交额", "换手率"],
+        "市值股本": ["总市值", "流通市值", "总股本", "流通股本"],
+        "公司信息": ["行业", "上市时间", "股票简称", "股票代码"]
+    }
+    
+    # 过滤掉不存在的 key
+    final_groups = {}
+    for g_name, g_keys in groups.items():
+        valid_g_keys = [k for k in g_keys if k in clean_info]
+        if valid_g_keys:
+            final_groups[g_name] = valid_g_keys
+
+    return {
+        "info": clean_info,
+        "groups": final_groups,
+        "important_keys": [k for k in important_keys if k in clean_info]
+    }
 
 @app.get("/api/stock/{code}/fundamentals")
 async def get_stock_fundamentals(code: str):
@@ -357,7 +405,6 @@ async def get_stock_fundamentals(code: str):
         info = get_fundamentals_cached(clean_code)
         return info
     except Exception as e:
-        # Fallback if EM fails, try another source or return empty
         return {"error": str(e)}
 
 @app.get("/api/search")
@@ -367,12 +414,24 @@ async def search_stocks(q: str):
     
     stocks = get_stock_list()
     results = []
-    q = q.lower()
+    q_lower = q.lower()
+    
+    # 提取纯代码部分进行代码搜索，兼容 SH.600000, sz000001 等格式
+    clean_q = q_lower
+    for prefix in ['sh.', 'sz.', 'sh', 'sz']:
+        if q_lower.startswith(prefix):
+            potential_clean = q_lower[len(prefix):]
+            if potential_clean: # 确保不是只输了前缀
+                clean_q = potential_clean
+            break
     
     for s in stocks:
         code = s['代码']
         name = s['名称']
-        if q in code.lower() or q in name.lower():
+        # 匹配逻辑：
+        # 1. 如果去掉了前缀的 clean_q 在股票代码中
+        # 2. 或者原始输入的 q_lower 在名称中
+        if clean_q in code.lower() or q_lower in name.lower():
             results.append({
                 "value": code,
                 "label": f"{code} - {name}"
@@ -385,14 +444,22 @@ async def search_stocks(q: str):
 @cache.memoize(expire=3600)
 def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end: str):
     clean_code = code.split('.')[-1] if '.' in code else code
+    df = None
+    
     if source == "baostock":
+        # Auto-prefix for baostock if missing
+        lower_code = code.lower()
+        if not (lower_code.startswith('sh.') or lower_code.startswith('sz.')):
+            prefix = "sh" if clean_code.startswith(('6', '9', '5')) else "sz"
+            code = f"{prefix}.{clean_code}"
+            
         # Login to baostock
-        lg = bs.login()
+        lg = log_external_api("baostock.login", bs.login)
         if lg.error_code != '0':
             return None
         
         try:
-            rs = bs.query_history_k_data_plus(
+            rs = log_external_api(f"baostock.query_history_k_data_plus({code})", bs.query_history_k_data_plus,
                 code,
                 "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
                 start_date=fetch_start,
@@ -412,10 +479,20 @@ def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end:
                 return None
                 
             df = pd.DataFrame(data_list, columns=rs.fields)
-            return df
         finally:
-            bs.logout()
+            log_external_api("baostock.logout", bs.logout)
     
+    elif source == "efinance":
+        try:
+            df = log_external_api(f"efinance.stock.get_quote_history({clean_code})", ef.stock.get_quote_history,
+                clean_code, 
+                beg=fetch_start.replace('-', ''), 
+                end=req_end.replace('-', '')
+            )
+        except Exception as e:
+            print(f"efinance error: {e}")
+            return None
+
     elif source == "ths":
         # Using akshare for THS/EastMoney data
         # Detect if it's an ETF
@@ -423,13 +500,11 @@ def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end:
         prefix = "sh" if clean_code.startswith(('6', '9', '5')) else "sz"
         ak_code = f"{prefix}{clean_code}"
         
-        df = None
-        
         if is_etf:
             # Try Sina ETF source first (stable)
-            for attempt in range(2):
+            for _ in range(2):
                 try:
-                    df = ak.fund_etf_hist_sina(symbol=ak_code)
+                    df = log_external_api(f"akshare.fund_etf_hist_sina({ak_code})", ak.fund_etf_hist_sina, symbol=ak_code)
                     if df is not None and not df.empty:
                         df['date'] = df['date'].astype(str)
                         df = df[(df['date'] >= fetch_start) & (df['date'] <= req_end)]
@@ -439,9 +514,9 @@ def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end:
             
             # Fallback to EM ETF source
             if df is None or df.empty:
-                for attempt in range(2):
+                for _ in range(2):
                     try:
-                        df = ak.fund_etf_hist_em(
+                        df = log_external_api(f"akshare.fund_etf_hist_em({clean_code})", ak.fund_etf_hist_em,
                             symbol=clean_code, 
                             period="daily", 
                             start_date=fetch_start.replace('-', ''), 
@@ -454,9 +529,9 @@ def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end:
                         time.sleep(1)
         else:
             # Stock logic
-            for attempt in range(2):
+            for _ in range(2):
                 try:
-                    df = ak.stock_zh_a_daily(
+                    df = log_external_api(f"akshare.stock_zh_a_daily({ak_code})", ak.stock_zh_a_daily,
                         symbol=ak_code, 
                         start_date=fetch_start.replace('-', ''), 
                         end_date=req_end.replace('-', ''), 
@@ -469,9 +544,9 @@ def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end:
                     time.sleep(1)
             
             if df is None or df.empty:
-                for attempt in range(2):
+                for _ in range(2):
                     try:
-                        df = ak.stock_zh_a_hist(
+                        df = log_external_api(f"akshare.stock_zh_a_hist({clean_code})", ak.stock_zh_a_hist,
                             symbol=clean_code, 
                             period="daily", 
                             start_date=fetch_start.replace('-', ''), 
@@ -486,56 +561,52 @@ def fetch_history_data_cached(code: str, source: str, fetch_start: str, req_end:
         # Fallback to efinance
         if df is None or df.empty:
             try:
-                df = ef.stock.get_quote_history(
+                df = log_external_api(f"efinance.stock.get_quote_history({clean_code})", ef.stock.get_quote_history,
                     clean_code, 
                     beg=fetch_start.replace('-', ''), 
                     end=req_end.replace('-', '')
                 )
-                if df is not None and not df.empty:
-                    df = df.rename(columns={
-                        "日期": "date", "开盘": "open", "收盘": "close",
-                        "最高": "high", "最低": "low", "成交量": "volume", "换手率": "turn"
-                    })
             except:
                 pass
 
-        if df is not None and not df.empty:
-            # Standardize columns
-            rename_map = {
-                "日期": "date", "开盘": "open", "收盘": "close", 
-                "最高": "high", "最低": "low", "成交量": "volume", "换手率": "turn",
-                "turnover": "turn"
-            }
-            df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
-            df['date'] = df['date'].astype(str)
-            df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-            if 'turn' not in df.columns:
-                df['turn'] = 1.0 
-            df['turn'] = pd.to_numeric(df['turn'], errors='coerce').fillna(1.0)
-            if df['turn'].max() < 1.0 and df['turn'].max() > 0: 
-                df['turn'] = df['turn'] * 100
-            return df
+    # Standardize and return if data exists
+    if df is not None and not df.empty:
+        # Standardize columns
+        rename_map = {
+            "日期": "date", "开盘": "open", "收盘": "close", 
+            "最高": "high", "最低": "low", "成交量": "volume", "换手率": "turn",
+            "turnover": "turn", "pctChg": "pct_chg"
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+        df['date'] = df['date'].astype(str)
+        df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        if 'turn' not in df.columns:
+            df['turn'] = 1.0 
+        df['turn'] = pd.to_numeric(df['turn'], errors='coerce').fillna(1.0)
+        if df['turn'].max() < 1.0 and df['turn'].max() > 0: 
+            df['turn'] = df['turn'] * 100
+        return df
             
     return None
 
-@app.get("/api/stock/{code}")
-async def get_stock_data(
+@cache.memoize(expire=600)
+def get_stock_data_internal(
     code: str, 
-    source: str = "baostock",
-    algorithm: str = "triangular", 
-    decay: float = 1.0, 
-    lookback: int = 250,
-    use_turnover: bool = True,
-    decay_factor: float = 1.0,
-    peakUpperPercent: float = 10.0,
-    peakLowerPercent: float = 10.0,
-    showPeakArea: bool = True,
-    longTermDays: int = 100,
-    mediumTermDays: int = 10,
-    shortTermDays: int = 2,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    include_all_distributions: bool = False
+    source: str,
+    algorithm: str, 
+    decay: float, 
+    lookback: int,
+    use_turnover: bool,
+    decay_factor: float,
+    peakUpperPercent: float,
+    peakLowerPercent: float,
+    showPeakArea: bool,
+    longTermDays: int,
+    mediumTermDays: int,
+    shortTermDays: int,
+    start_date: Optional[str],
+    end_date: Optional[str],
+    include_all_distributions: bool
 ):
     settings = ChipSettings(
         algorithm=algorithm, 
@@ -558,36 +629,67 @@ async def get_stock_data(
     # Fetch additional historical data for stabilization
     fetch_start = (datetime.datetime.strptime(req_start, '%Y-%m-%d') - datetime.timedelta(days=3*365)).strftime('%Y-%m-%d')
     
-    try:
-        result_df = fetch_history_data_cached(code, source, fetch_start, req_end)
-        
-        if result_df is None or result_df.empty:
-            raise HTTPException(status_code=404, detail="No data found for the given stock code.")
+    result_df = fetch_history_data_cached(code, source, fetch_start, req_end)
+    
+    if result_df is None or result_df.empty:
+        return None
 
-        # Calculate profit ratio and distribution
-        result_df, last_distribution, range_distribution, all_distributions, summary_stats, all_summary_stats = calculate_advanced_chips(
-            result_df, settings, include_all_distributions
+    # Calculate profit ratio and distribution
+    result_df, last_distribution, range_distribution, all_distributions, summary_stats, all_summary_stats = calculate_advanced_chips(
+        result_df, settings, include_all_distributions
+    )
+    
+    # Filter data based on user's requested date range for display
+    mask = (result_df['date'] >= req_start) & (result_df['date'] <= req_end)
+    display_df = result_df[mask]
+    
+    if len(display_df) < 2:
+        display_df = result_df.tail(min(len(result_df), 260))
+        
+    display_data = display_df.to_dict(orient="records")
+    
+    response = {
+        "history": display_data,
+        "distribution": last_distribution,
+        "range_distribution": range_distribution,
+        "summary_stats": summary_stats
+    }
+    
+    if include_all_distributions:
+        response["all_distributions"] = all_distributions
+        response["all_summary_stats"] = all_summary_stats
+        
+    return response
+
+@app.get("/api/stock/{code}")
+async def get_stock_data(
+    code: str, 
+    source: str = "baostock",
+    algorithm: str = "triangular", 
+    decay: float = 1.0, 
+    lookback: int = 250,
+    use_turnover: bool = True,
+    decay_factor: float = 1.0,
+    peakUpperPercent: float = 10.0,
+    peakLowerPercent: float = 10.0,
+    showPeakArea: bool = True,
+    longTermDays: int = 100,
+    mediumTermDays: int = 10,
+    shortTermDays: int = 2,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    include_all_distributions: bool = False
+):
+    try:
+        response = get_stock_data_internal(
+            code, source, algorithm, decay, lookback, use_turnover, decay_factor,
+            peakUpperPercent, peakLowerPercent, showPeakArea,
+            longTermDays, mediumTermDays, shortTermDays,
+            start_date, end_date, include_all_distributions
         )
         
-        # Filter data based on user's requested date range for display
-        mask = (result_df['date'] >= req_start) & (result_df['date'] <= req_end)
-        display_df = result_df[mask]
-        
-        if len(display_df) < 2:
-            display_df = result_df.tail(min(len(result_df), 260))
-            
-        display_data = display_df.to_dict(orient="records")
-        
-        response = {
-            "history": display_data,
-            "distribution": last_distribution,
-            "range_distribution": range_distribution,
-            "summary_stats": summary_stats
-        }
-        
-        if include_all_distributions:
-            response["all_distributions"] = all_distributions
-            response["all_summary_stats"] = all_summary_stats
+        if response is None:
+            raise HTTPException(status_code=404, detail="No data found for the given stock code.")
             
         return response
         
@@ -596,217 +698,105 @@ async def get_stock_data(
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/backtest")
-async def run_backtest(req: BacktestRequest):
-    # Use provided chip settings or defaults
-    settings = req.chip_settings or ChipSettings()
+@cache.memoize(expire=600)
+def run_backtest_internal(req_dict: dict):
+    code = req_dict['code']
+    buy_threshold = req_dict['buy_threshold']
+    sell_threshold = req_dict['sell_threshold']
+    source = req_dict.get('source', 'baostock')
+    start_date = req_dict.get('start_date')
+    end_date = req_dict.get('end_date')
+    strategy_type = req_dict.get('strategy_type', 'mean_reversion')
     
-    # Default date range
-    req_end = req.end_date or datetime.date.today().strftime('%Y-%m-%d')
-    req_start = req.start_date or (datetime.date.today() - datetime.timedelta(days=365)).strftime('%Y-%m-%d')
+    chip_settings_dict = req_dict.get('chip_settings')
+    settings = ChipSettings(**chip_settings_dict) if chip_settings_dict else ChipSettings()
     
-    # Fetch extra data for chip stabilization (3 years)
+    req_end = end_date or datetime.date.today().strftime('%Y-%m-%d')
+    req_start = start_date or (datetime.date.today() - datetime.timedelta(days=365)).strftime('%Y-%m-%d')
     fetch_start = (datetime.datetime.strptime(req_start, '%Y-%m-%d') - datetime.timedelta(days=3*365)).strftime('%Y-%m-%d')
     
+    df = fetch_history_data_cached(code, source, fetch_start, req_end)
+    if df is None or df.empty: return None
+    
+    df, _, _, _, _, _ = calculate_advanced_chips(df, settings, include_all_distributions=False)
+    mask = (df['date'] >= req_start) & (df['date'] <= req_end)
+    test_df = df[mask].copy()
+    if test_df.empty: return {"error": "No data available for the selected date range."}
+    
+    initial_cash, cash, shares, trades, yield_curve, current_cost_basis = 100000.0, 100000.0, 0.0, [], [], 0.0
+    buy_unit_cash = 1000.0 if strategy_type == "buy_and_hold" else initial_cash * 0.1 
+    final_price = float(test_df.iloc[-1]['close'])
+    
+    for i in range(len(test_df)):
+        row = test_df.iloc[i]
+        ratio, price, date = row['profit_ratio'], float(row['close']), str(row['date'])
+        
+        should_buy = (strategy_type == "breakout" and ratio >= buy_threshold) or \
+                     (strategy_type == "buy_and_hold" and ratio <= buy_threshold) or \
+                     (strategy_type == "mean_reversion" and ratio <= buy_threshold)
+        
+        if should_buy and (strategy_type == "buy_and_hold" or cash > 0):
+            amount_to_spend = buy_unit_cash if strategy_type == "buy_and_hold" else min(cash, buy_unit_cash)
+            if strategy_type != "buy_and_hold" and cash < buy_unit_cash * 1.1: amount_to_spend = cash
+            
+            shares_to_buy = amount_to_spend / price
+            cash -= amount_to_spend
+            shares += shares_to_buy
+            current_cost_basis += amount_to_spend
+            
+            trade_data = {"type": "buy", "date": date, "price": price, "ratio": float(ratio), "amount": round(amount_to_spend, 2)}
+            if strategy_type == "buy_and_hold":
+                trade_data["profit"] = round((final_price - price) / price * 100, 2)
+            trades.append(trade_data)
+        
+        should_sell = False
+        if shares > 0:
+            if strategy_type == "breakout": should_sell = ratio <= sell_threshold
+            elif strategy_type == "mean_reversion": should_sell = ratio >= sell_threshold
+            
+            if (i == len(test_df) - 1) and strategy_type != "buy_and_hold": should_sell = True
+            
+            if should_sell:
+                sell_revenue = shares * price
+                trade_profit_pct = (sell_revenue - current_cost_basis) / current_cost_basis if current_cost_basis > 0 else 0
+                trades.append({"type": "sell", "date": date, "price": price, "ratio": float(ratio), "profit": round(trade_profit_pct * 100, 2), "amount": round(sell_revenue, 2)})
+                cash += sell_revenue
+                shares, current_cost_basis = 0, 0.0
+        
+        current_total_value = cash + (shares * price)
+        if strategy_type == "buy_and_hold":
+            cumulative_yield = (shares * final_price - current_cost_basis) / current_cost_basis if current_cost_basis > 0 else 0.0
+        else:
+            cumulative_yield = (current_total_value - initial_cash) / initial_cash
+            
+        yield_curve.append({"date": date, "yield": round(cumulative_yield * 100, 2), "profit_ratio": float(ratio), "cash": round(cash, 2), "shares": round(shares, 4), "price": price})
+    
+    max_drawdown, peak = 0, -999999.0
+    for item in yield_curve:
+        peak = max(peak, item['yield'])
+        max_drawdown = max(max_drawdown, peak - item['yield'])
+    
+    if strategy_type == "buy_and_hold":
+        final_yield = (shares * final_price - current_cost_basis) / current_cost_basis if current_cost_basis > 0 else 0.0
+        buy_trades = [t for t in trades if t['type'] == 'buy']
+        win_rate = round(len([t for t in buy_trades if t.get('profit', 0) > 0]) / max(1, len(buy_trades)) * 100, 2)
+    else:
+        final_yield = cumulative_yield
+        sell_trades = [t for t in trades if t['type'] == 'sell']
+        win_rate = round(len([t for t in sell_trades if t.get('profit', 0) > 0]) / max(1, len(sell_trades)) * 100, 2)
+
+    return {"code": code, "total_yield": round(final_yield * 100, 2), "trades": trades, "yield_curve": yield_curve, "max_drawdown": round(max_drawdown, 2), "buy_count": len([t for t in trades if t['type'] == 'buy']), "sell_count": len([t for t in trades if t['type'] == 'sell']), "trade_count": len(trades), "win_rate": win_rate}
+
+@app.post("/api/backtest")
+async def run_backtest(req: BacktestRequest):
     try:
-        df = fetch_history_data_cached(req.code, req.source, fetch_start, req_end)
-        if df is None or df.empty:
-            raise HTTPException(status_code=404, detail="No data found for the given stock code.")
-        
-        # Calculate profit ratios
-        df, _, _, _, _, _ = calculate_advanced_chips(df, settings, include_all_distributions=False)
-        
-        # Filter for the backtest period
-        mask = (df['date'] >= req_start) & (df['date'] <= req_end)
-        test_df = df[mask].copy()
-        
-        if test_df.empty:
-             raise HTTPException(status_code=400, detail="No data available for the selected date range.")
-        
-        # Simulation
-        initial_cash = 100000.0
-        cash = initial_cash
-        shares = 0.0
-        trades = []
-        yield_curve = []
-        current_cost_basis = 0.0
-        
-        # 策略买入配置
-        if req.strategy_type == "buy_and_hold":
-            # 只买不卖策略：单笔固定 1000 元，且不设总份数限制（允许无限买入）
-            buy_unit_cash = 1000.0
-        else:
-            # 其他策略：每份买入资金设为初始资金的 10%
-            buy_unit_cash = initial_cash * 0.1 
-        
-        # Final price of the backtest period
-        final_price = float(test_df.iloc[-1]['close'])
-        
-        for i in range(len(test_df)):
-            row = test_df.iloc[i]
-            ratio = row['profit_ratio']
-            price = float(row['close'])
-            date = str(row['date'])
-            
-            # Buy logic
-            should_buy = False
-            if req.strategy_type == "breakout":
-                if ratio >= req.buy_threshold:
-                    should_buy = True
-            elif req.strategy_type == "buy_and_hold":
-                # 只买不卖：只要获利比例低于阀值，就买入
-                if ratio <= req.buy_threshold:
-                    should_buy = True
-            elif req.strategy_type == "mean_reversion":
-                if ratio <= req.buy_threshold:
-                    should_buy = True
-            
-            # 执行买入
-            # 只买不卖策略不限制现金（无限买入），其他策略需有现金才买入
-            can_buy = (req.strategy_type == "buy_and_hold") or (cash > 0)
-            
-            if should_buy and can_buy:
-                if req.strategy_type == "buy_and_hold":
-                    # 只买不卖：固定 1000 元，即使现金不足也买入（允许负债/无限份额）
-                    amount_to_spend = buy_unit_cash
-                else:
-                    # 其他策略：不能超过剩余现金
-                    amount_to_spend = min(cash, buy_unit_cash)
-                    if cash < buy_unit_cash * 1.1: # 如果剩余现金不足 1.1 份，就一次性买完
-                        amount_to_spend = cash
-                
-                shares_to_buy = amount_to_spend / price
-                cash -= amount_to_spend
-                shares += shares_to_buy
-                current_cost_basis += amount_to_spend
-                
-                trade_data = {
-                    "type": "buy",
-                    "date": str(date),
-                    "price": price,
-                    "ratio": float(ratio),
-                    "amount": round(amount_to_spend, 2)
-                }
-                
-                # 为“只买不卖”策略的每一笔计算收益率（相对于回测结束时的价格）
-                if req.strategy_type == "buy_and_hold":
-                    trade_profit_pct = (final_price - price) / price
-                    trade_data["profit"] = round(trade_profit_pct * 100, 2)
-                
-                trades.append(trade_data)
-            
-            # Sell logic
-            should_sell = False
-            if shares > 0:
-                if req.strategy_type == "breakout":
-                    if ratio <= req.sell_threshold:
-                        should_sell = True
-                elif req.strategy_type == "buy_and_hold":
-                    # 只买不卖策略不主动止盈止损
-                    should_sell = False
-                elif req.strategy_type == "mean_reversion":
-                    if ratio >= req.sell_threshold:
-                        should_sell = True
-                
-                # 最后一天强制卖出（非只买不卖策略），用于结算
-                is_last_day = (i == len(test_df) - 1)
-                if is_last_day and req.strategy_type != "buy_and_hold":
-                    should_sell = True
-                
-                if should_sell:
-                    sell_revenue = shares * price
-                    trade_profit_pct = (sell_revenue - current_cost_basis) / current_cost_basis if current_cost_basis > 0 else 0
-                    
-                    trades.append({
-                        "type": "sell",
-                        "date": str(date),
-                        "price": price,
-                        "ratio": float(ratio),
-                        "profit": round(trade_profit_pct * 100, 2),
-                        "amount": round(sell_revenue, 2)
-                    })
-                    
-                    cash += sell_revenue
-                    shares = 0
-                    current_cost_basis = 0.0
-            
-            # Update yield curve (Daily total value)
-            current_total_value = cash + (shares * price)
-            
-            if req.strategy_type == "buy_and_hold":
-                # 只买不卖：累计收益率 = (当前持仓股数 * 走势图最后一天价格 - 累计投入) / 累计投入
-                if current_cost_basis > 0:
-                    # 使用走势图最后一天价格 final_price 计算收益
-                    current_market_value_at_final = shares * final_price
-                    # print(f"kim name {req.code} current_cost_basis ¥={current_cost_basis} current_market_value_at_final {current_market_value_at_final}");
-                    cumulative_yield = (current_market_value_at_final - current_cost_basis) / current_cost_basis
-                else:
-                    cumulative_yield = 0.0
-            else:
-                # 其他策略：收益率 = (当前总资产 - 初始资金) / 初始资金
-                cumulative_yield = (current_total_value - initial_cash) / initial_cash
-            
-            yield_curve.append({
-                "date": date,
-                "yield": round(cumulative_yield * 100, 2),
-                "profit_ratio": float(ratio),
-                "cash": round(cash, 2),
-                "shares": round(shares, 4),
-                "price": price
-            })
-        
-        # Calculate maximum drawdown
-        max_drawdown = 0
-        peak = -999999.0
-        for item in yield_curve:
-            y = item['yield']
-            if y > peak:
-                peak = y
-            drawdown = peak - y
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
-        
-        # Debug trade count
-        with open("backtest_debug.log", "a") as f:
-            f.write(f"{datetime.datetime.now()}: {req.code} backtest done. Trades: {len(trades)}, Buys: {len([t for t in trades if t['type'] == 'buy'])}, Sells: {len([t for t in trades if t['type'] == 'sell'])}\n")
-
-        # Final yield calculation logic
-        if req.strategy_type == "buy_and_hold":
-            # 最后一天收盘持仓价即为 final_price, 持仓份数为 shares, 累计投入为 current_cost_basis
-            if current_cost_basis > 0:
-                final_market_value = shares * final_price
-                final_yield = (final_market_value - current_cost_basis) / current_cost_basis
-            else:
-                final_yield = 0.0
-        else:
-            final_yield = cumulative_yield
-
-        # Win rate calculation
-        if req.strategy_type == "buy_and_hold":
-            # 只买不卖：胜率 = 盈利的买入笔数 / 总买入笔数
-            buy_trades = [t for t in trades if t['type'] == 'buy']
-            win_rate = round(len([t for t in buy_trades if t.get('profit', 0) > 0]) / max(1, len(buy_trades)) * 100, 2)
-        else:
-            # 其他策略：胜率 = 盈利的卖出笔数 / 总卖出笔数
-            sell_trades = [t for t in trades if t['type'] == 'sell']
-            win_rate = round(len([t for t in sell_trades if t.get('profit', 0) > 0]) / max(1, len(sell_trades)) * 100, 2)
-
-        return {
-            "code": req.code,
-            "total_yield": round(final_yield * 100, 2),
-            "trades": trades,
-            "yield_curve": yield_curve,
-            "max_drawdown": round(max_drawdown, 2),
-            "buy_count": len([t for t in trades if t['type'] == 'buy']),
-            "sell_count": len([t for t in trades if t['type'] == 'sell']),
-            "trade_count": len(trades),
-            "win_rate": win_rate
-        }
-        
+        result = run_backtest_internal(req.model_dump())
+        if result is None: raise HTTPException(status_code=404, detail="No data found for the given stock code.")
+        if "error" in result: raise HTTPException(status_code=400, detail=result["error"])
+        with open("backtest_debug.log", "a") as f: f.write(f"{datetime.datetime.now()}: {req.code} backtest done. Trades: {result['trade_count']}\n")
+        return result
     except Exception as e:
-        print(f"Backtest error: {e}")
-        if isinstance(e, HTTPException):
-            raise e
+        if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
