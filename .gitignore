@@ -1,0 +1,21 @@
+# Cache
+cache/
+backend/cache/
+__pycache__/
+*.pyc
+
+# Logs and PIDs
+*.log
+backend.pid
+
+# Node.js
+node_modules/
+dist/
+.env
+
+# OS files
+.DS_Store
+
+# VS Code
+.vscode/
+!.vscode/settings.json

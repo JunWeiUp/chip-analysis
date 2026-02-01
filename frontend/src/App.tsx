@@ -15,7 +15,12 @@ import {
   RotateCcw,
   Search, 
   Settings,
+  Star,
   TrendingUp, 
+  Activity,
+  BarChart3,
+  ShieldCheck,
+  Zap,
   X as XIcon
 } from 'lucide-react';
 import { toast } from "sonner";
@@ -41,6 +46,13 @@ import {
   DrawerTitle,
   DrawerTrigger,
 } from "@/components/ui/drawer";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { Label } from "@/components/ui/label";
@@ -48,11 +60,18 @@ import { DatePickerWithRange } from "@/components/ui/date-range-picker";
 import { Toaster } from "@/components/ui/sonner";
 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import ProfitRatioChart from './components/ProfitRatioChart';
-import CoolStockTable from './components/CoolStockTable';
 import ChipDistributionChart from './components/ChipDistributionChart';
 import BacktestYieldChart from './components/BacktestYieldChart';
+import FavoriteStocks from './components/FavoriteStocks';
+import type { FavoriteStock } from './components/FavoriteStocks';
+import ChipPeakAnalysis from './components/ChipPeakAnalysis';
+import MoneyFlowAnalysis from './components/MoneyFlowAnalysis';
+import MarketSentiment from './components/MarketSentiment';
+import type { SentimentData } from './components/MarketSentiment';
+import FinancialRadar from './components/FinancialRadar';
 import './App.css';
 
 interface ChipDistribution {
@@ -70,6 +89,7 @@ interface StockData {
   volume: string;
   profit_ratio: number;
   turn?: number;
+  [key: string]: string | number | boolean | undefined;
 }
 
 interface SummaryStats {
@@ -186,6 +206,70 @@ interface ExtendedStockData extends StockData {
   [key: string]: string | number | boolean | undefined;
 }
 
+interface SectorComparisonItem {
+  code: string;
+  name: string;
+  stats: {
+    profit_ratio: number;
+    avg_cost: number;
+    conc_90: {
+      concentration: number;
+    };
+  };
+}
+
+interface SectorComparison {
+  comparison: SectorComparisonItem[];
+  industry?: string;
+}
+
+interface StockFlowItem {
+  日期: string;
+  主力净流入: number;
+  主力净流入占比: number;
+}
+
+interface SectorMoneyFlow {
+  stock_flow: StockFlowItem[];
+  sector_flow?: {
+    名称: string;
+    今日净额: number;
+    今日涨跌幅: number;
+    今日主力净占比: number;
+  };
+}
+
+interface SectorRotationItem {
+  "板块名称": string;
+  "涨跌幅": number;
+  "主力净额": number;
+}
+
+interface Diagnosis {
+  risk_level: string;
+  diagnosis: string[];
+  suggestions: string;
+  stats: {
+    profit_ratio: number;
+    conc_90: {
+      concentration: number;
+    };
+    avg_cost: number;
+    asr: number;
+  };
+}
+
+interface FinancialRadarData {
+  score: number;
+  data: {
+    subject: string;
+    value: number;
+    fullMark: number;
+    original: string;
+  }[];
+  period: string;
+}
+
 const App: React.FC = () => {
   const [stockCode, setStockCode] = useState<string>('sh.600000');
   const [dataSource, setDataSource] = useState<string>('baostock');
@@ -246,6 +330,36 @@ const App: React.FC = () => {
     }
   });
 
+  const [favorites, setFavorites] = useState<FavoriteStock[]>(() => {
+    const saved = localStorage.getItem('favorite_stocks');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const isFavorite = useMemo(() => {
+    return favorites.some(f => f.code === stockCode);
+  }, [favorites, stockCode]);
+
+  const toggleFavorite = () => {
+    if (isFavorite) {
+      const next = favorites.filter(f => f.code !== stockCode);
+      setFavorites(next);
+      localStorage.setItem('favorite_stocks', JSON.stringify(next));
+      toast.info(`已从自选股移除 ${stockCode}`);
+    } else {
+      const info = fundamentals?.info || (fundamentals as unknown as Record<string, string | number>);
+      const stockName = info?.['股票简称'] as string || stockCode;
+      const newFav = {
+        code: stockCode,
+        name: stockName,
+        addedAt: new Date().toISOString(),
+      };
+      const next = [...favorites, newFav];
+      setFavorites(next);
+      localStorage.setItem('favorite_stocks', JSON.stringify(next));
+      toast.success(`已添加 ${stockName} (${stockCode}) 到自选股`);
+    }
+  };
+
   const addToHistory = (code: string, name?: string) => {
     setSearchHistory(prev => {
       const next = [{ code, name }, ...prev.filter(item => item.code !== code)].slice(0, 10);
@@ -296,6 +410,18 @@ const App: React.FC = () => {
   });
   const [drawerVisible, setDrawerVisible] = useState<boolean>(false);
   const [fullscreenChart, setFullscreenChart] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>('analysis');
+
+  const [sectorComparison, setSectorComparison] = useState<SectorComparison | null>(null);
+  const [sectorMoneyFlow, setSectorMoneyFlow] = useState<SectorMoneyFlow | null>(null);
+  const [sectorRotation, setSectorRotation] = useState<SectorRotationItem[]>([]);
+  const [diagnosis, setDiagnosis] = useState<Diagnosis | null>(null);
+  const [extraLoading, setExtraLoading] = useState<boolean>(false);
+
+  const [sentimentData, setSentimentData] = useState<SentimentData | null>(null);
+  const [financialRadarData, setFinancialRadarData] = useState<FinancialRadarData | null>(null);
+  const [sentimentLoading, setSentimentLoading] = useState<boolean>(false);
+  const [radarLoading, setRadarLoading] = useState<boolean>(false);
 
   const [backtestLoading, setBacktestLoading] = useState<boolean>(false);
   const [backtestResult, setBacktestResult] = useState<BacktestResult | null>(null);
@@ -463,6 +589,9 @@ const App: React.FC = () => {
       const stockName = info?.['股票简称'] as string | undefined;
       addToHistory(codeToUse, stockName);
       
+      // 异步获取额外分析数据
+      fetchExtraData(codeToUse);
+      
       toast.success('数据获取成功');
     } catch (err: unknown) {
       let errorMsg = '获取数据失败，请检查股票代码是否正确';
@@ -480,9 +609,305 @@ const App: React.FC = () => {
     }
   };
 
+  const fetchExtraData = async (code: string) => {
+    setExtraLoading(true);
+    setSentimentLoading(true);
+    setRadarLoading(true);
+    try {
+      const [compRes, flowRes, rotRes, diagRes, sentimentRes, radarRes] = await Promise.all([
+        axios.get(`http://localhost:8001/api/stock/${code}/sector/comparison`),
+        axios.get(`http://localhost:8001/api/stock/${code}/sector/money-flow`),
+        axios.get(`http://localhost:8001/api/sector/rotation`),
+        axios.get(`http://localhost:8001/api/stock/${code}/diagnosis`),
+        axios.get(`http://localhost:8001/api/market/sentiment`),
+        axios.get(`http://localhost:8001/api/stock/${code}/financial-radar`)
+      ]);
+      setSectorComparison(compRes.data);
+      setSectorMoneyFlow(flowRes.data);
+      setSectorRotation(rotRes.data);
+      setDiagnosis(diagRes.data);
+      setSentimentData(sentimentRes.data);
+      setFinancialRadarData(radarRes.data);
+    } catch (err) {
+      console.error('Failed to fetch extra data:', err);
+    } finally {
+      setExtraLoading(false);
+      setSentimentLoading(false);
+      setRadarLoading(false);
+    }
+  };
+
+  const renderSectorAnalysis = () => {
+    if (!sectorComparison && !sectorMoneyFlow && !sectorRotation.length) {
+      return (
+        <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+          <BarChart3 className="h-12 w-12 mx-auto mb-4 opacity-20" />
+          <p>暂无板块分析数据，请先搜索股票并点击分析</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* 同板块筹码对比 */}
+          <Card className="border-none shadow-sm">
+            <CardHeader className="pb-3 border-b border-slate-50">
+              <div className="flex items-center gap-2">
+                <LayoutDashboard className="h-5 w-5 text-primary" />
+                <CardTitle className="text-base font-semibold">同板块股票筹码对比 ({sectorComparison?.industry})</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>股票</TableHead>
+                    <TableHead className="text-right">获利比例</TableHead>
+                    <TableHead className="text-right">平均成本</TableHead>
+                    <TableHead className="text-right">集中度(90)</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sectorComparison?.comparison?.map((item: SectorComparisonItem) => (
+                    <TableRow key={item.code} className="cursor-pointer hover:bg-slate-50" onClick={() => {
+                      setStockCode(item.code);
+                      fetchData(item.code);
+                    }}>
+                      <TableCell>
+                        <div className="font-medium">{item.name}</div>
+                        <div className="text-xs text-slate-400">{item.code}</div>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant={item.stats.profit_ratio > 50 ? "destructive" : "secondary"}>
+                          {item.stats.profit_ratio.toFixed(1)}%
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">¥{item.stats.avg_cost.toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{item.stats.conc_90.concentration.toFixed(1)}%</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
+          {/* 资金流向分析 */}
+          <Card className="border-none shadow-sm">
+            <CardHeader className="pb-3 border-b border-slate-50">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-5 w-5 text-green-500" />
+                <CardTitle className="text-base font-semibold">板块与个股资金流向</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-4">
+              {sectorMoneyFlow?.sector_flow && (
+                <div className="mb-6 p-4 rounded-xl bg-slate-50 border border-slate-100">
+                  <div className="text-sm font-medium text-slate-500 mb-3">板块资金流向: {sectorMoneyFlow.sector_flow.名称}</div>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="text-center">
+                      <div className="text-xs text-slate-400 mb-1">今日净流入</div>
+                      <div className={`text-sm font-bold ${sectorMoneyFlow.sector_flow['今日净额'] > 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {(sectorMoneyFlow.sector_flow['今日净额'] / 10000).toFixed(2)}万
+                      </div>
+                    </div>
+                    <div className="text-center border-x border-slate-200">
+                      <div className="text-xs text-slate-400 mb-1">今日涨跌幅</div>
+                      <div className={`text-sm font-bold ${sectorMoneyFlow.sector_flow['今日涨跌幅'] > 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {sectorMoneyFlow.sector_flow['今日涨跌幅']}%
+                      </div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xs text-slate-400 mb-1">主力净占比</div>
+                      <div className="text-sm font-bold text-slate-700">
+                        {sectorMoneyFlow.sector_flow['今日主力净占比']}%
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              <div className="text-sm font-medium text-slate-500 mb-2">个股近5日资金趋势:</div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>日期</TableHead>
+                    <TableHead className="text-right">主力净流入</TableHead>
+                    <TableHead className="text-right">主力占比</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sectorMoneyFlow?.stock_flow?.map((item: StockFlowItem, idx: number) => (
+                    <TableRow key={idx}>
+                      <TableCell className="text-xs">{item.日期}</TableCell>
+                      <TableCell className={`text-right text-xs ${item.主力净流入 > 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        {(item.主力净流入 / 10000).toFixed(2)}万
+                      </TableCell>
+                      <TableCell className="text-right text-xs">{item.主力净流入占比}%</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* 板块轮动监控 */}
+        <Card className="border-none shadow-sm">
+          <CardHeader className="pb-3 border-b border-slate-50">
+            <div className="flex items-center gap-2">
+              <RotateCcw className="h-5 w-5 text-orange-500" />
+              <CardTitle className="text-base font-semibold">行业板块轮动监控 (今日涨幅榜)</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+              {Array.isArray(sectorRotation) && sectorRotation?.map((sector: SectorRotationItem, idx: number) => (
+                <div key={idx} className="p-3 rounded-lg bg-slate-50 border border-slate-100 hover:border-primary/30 transition-colors">
+                  <div className="text-xs font-bold text-slate-700 truncate mb-1">{sector.板块名称}</div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-slate-400">涨跌幅</span>
+                    <span className={`text-xs font-bold ${sector.涨跌幅 > 0 ? 'text-red-500' : 'text-green-500'}`}>
+                      {sector.涨跌幅}%
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between mt-1">
+                    <span className="text-[10px] text-slate-400">主力净入</span>
+                    <span className="text-[10px] font-medium">{((sector.主力净额 || 0) / 100000000).toFixed(2)}亿</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderSmartDiagnosis = () => {
+    if (!diagnosis) {
+      return (
+        <div className="p-8 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+          <Zap className="h-12 w-12 mx-auto mb-4 opacity-20" />
+          <p>暂无智能诊断报告，请先搜索股票并点击分析</p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* AI 核心诊断 */}
+          <Card className="lg:col-span-2 border-none shadow-sm overflow-hidden">
+            <div className={`h-1.5 w-full ${diagnosis.risk_level === '高' ? 'bg-red-500' : diagnosis.risk_level === '低' ? 'bg-green-500' : 'bg-orange-400'}`} />
+            <CardHeader className="pb-3 border-b border-slate-50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Zap className="h-5 w-5 text-yellow-500" />
+                  <CardTitle className="text-base font-semibold">AI 筹码智能诊断</CardTitle>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500">风险评级:</span>
+                  <Badge className={diagnosis.risk_level === '高' ? 'bg-red-500' : diagnosis.risk_level === '低' ? 'bg-green-500' : 'bg-orange-400'}>
+                    {diagnosis.risk_level}风险
+                  </Badge>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-6">
+              <div className="space-y-4">
+                {diagnosis.diagnosis.map((text: string, idx: number) => (
+                  <div key={idx} className="flex gap-3 items-start p-3 rounded-lg bg-slate-50 border-l-4 border-primary/20">
+                    <div className="mt-0.5 h-4 w-4 rounded-full bg-primary/10 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
+                      {idx + 1}
+                    </div>
+                    <p className="text-sm text-slate-700 leading-relaxed">{text}</p>
+                  </div>
+                ))}
+              </div>
+              
+              <div className="mt-8 p-4 rounded-xl bg-primary/5 border border-primary/10">
+                <div className="flex items-center gap-2 mb-2 text-primary">
+                  <ShieldCheck className="h-4 w-4" />
+                  <span className="text-sm font-bold">操盘建议 (仅供参考)</span>
+                </div>
+                <p className="text-sm font-medium text-slate-900 leading-relaxed">
+                  {diagnosis.suggestions}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* 筹码健康度 */}
+          <div className="space-y-6">
+            <FinancialRadar 
+              score={financialRadarData?.score || 0}
+              data={financialRadarData?.data || []}
+              period={financialRadarData?.period || ''}
+              loading={radarLoading}
+            />
+
+            <Card className="border-none shadow-sm">
+              <CardHeader className="pb-3 border-b border-slate-50">
+                <div className="flex items-center gap-2">
+                  <Activity className="h-5 w-5 text-blue-500" />
+                  <CardTitle className="text-base font-semibold">筹码健康度指标</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="pt-6 space-y-6">
+              <div>
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-slate-500">获利占比健康度</span>
+                  <span className="font-bold">{diagnosis.stats.profit_ratio.toFixed(1)}%</span>
+                </div>
+                <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full rounded-full ${diagnosis.stats.profit_ratio > 80 ? 'bg-red-500' : diagnosis.stats.profit_ratio < 20 ? 'bg-green-500' : 'bg-blue-500'}`} 
+                    style={{ width: `${diagnosis.stats.profit_ratio}%` }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-slate-500">筹码集中度健康度</span>
+                  <span className="font-bold">{(100 - diagnosis.stats.conc_90.concentration).toFixed(1)}%</span>
+                </div>
+                <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                  <div 
+                    className="h-full bg-emerald-500 rounded-full" 
+                    style={{ width: `${100 - diagnosis.stats.conc_90.concentration}%` }}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs mb-1.5">
+                  <span className="text-slate-500">平均持仓盈亏</span>
+                  <span className={`font-bold ${((parseFloat(data[data.length-1]?.close || '0') / diagnosis.stats.avg_cost - 1) * 100) > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                    {((parseFloat(data[data.length-1]?.close || '0') / diagnosis.stats.avg_cost - 1) * 100).toFixed(1)}%
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mt-4">
+                  <div className="p-3 rounded-lg bg-slate-50 text-center">
+                    <div className="text-[10px] text-slate-400 mb-1">价格/成本比</div>
+                    <div className="text-sm font-bold">{(parseFloat(data[data.length-1]?.close || '0') / diagnosis.stats.avg_cost).toFixed(2)}</div>
+                  </div>
+                  <div className="p-3 rounded-lg bg-slate-50 text-center">
+                    <div className="text-[10px] text-slate-400 mb-1">ASR值</div>
+                    <div className="text-sm font-bold">{diagnosis.stats.asr.toFixed(1)}</div>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    </div>
+    );
+  };
+
   const activeDate = hoveredDate || (lockedDates.length > 0 ? lockedDates[lockedDates.length - 1] : null);
 
-  // 筹码分布和统计数据的派生状态，避免在 useEffect 中手动同步导致的延迟
   const currentDistribution = useMemo(() => {
     if (activeDate) {
       // 如果当前日期有数据，直接返回
@@ -760,6 +1185,32 @@ const App: React.FC = () => {
             <h1 className="text-xl font-bold tracking-tight text-slate-900">股票筹码分析系统</h1>
           </div>
           <div className="hidden items-center gap-4 md:flex">
+            <Sheet>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="sm" className="h-9 gap-2 border-slate-200 hover:bg-slate-50 transition-all active:scale-95">
+                  <Star className="h-4 w-4 text-amber-500 fill-amber-500" />
+                  <span className="font-medium">我的自选</span>
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="right" className="w-[400px] sm:w-[540px] p-0 overflow-hidden flex flex-col border-l-0 shadow-2xl">
+                <SheetHeader className="p-6 border-b bg-slate-50/50">
+                  <SheetTitle className="flex items-center gap-2 text-xl">
+                    <Star className="h-5 w-5 text-amber-500 fill-amber-500" />
+                    我的自选股
+                  </SheetTitle>
+                </SheetHeader>
+                <div className="flex-1 overflow-hidden p-6">
+                  <FavoriteStocks 
+                    favorites={favorites}
+                    setFavorites={setFavorites}
+                    onSelectStock={(code) => {
+                      setStockCode(code);
+                      fetchData(code);
+                    }} 
+                  />
+                </div>
+              </SheetContent>
+            </Sheet>
             <div className="flex items-center gap-2 rounded-full bg-primary/10 px-4 py-1.5 text-sm font-medium text-primary">
               <div className="h-2 w-2 rounded-full bg-primary animate-pulse" />
               Shadcn UI 活跃中
@@ -949,6 +1400,14 @@ const App: React.FC = () => {
                 )}
                 <Button 
                   variant="outline" 
+                  onClick={toggleFavorite} 
+                  className="h-11 px-6 rounded-xl border-slate-200 hover:bg-slate-50 transition-all active:scale-95"
+                >
+                  <Star className={`mr-2 h-4 w-4 ${isFavorite ? 'fill-amber-500 text-amber-500' : 'text-slate-500'}`} />
+                  {isFavorite ? '移除自选' : '加入自选'}
+                </Button>
+                <Button 
+                  variant="outline" 
                   onClick={() => {
                     setStockCode('sh.600000');
                     setData([]);
@@ -981,7 +1440,24 @@ const App: React.FC = () => {
 
         {renderFundamentals()}
         
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <TabsList className="bg-white/50 border border-slate-100 p-1">
+            <TabsTrigger value="analysis" className="data-[state=active]:bg-primary data-[state=active]:text-white">
+              <LayoutDashboard className="h-4 w-4 mr-2" />
+              筹码分析
+            </TabsTrigger>
+            <TabsTrigger value="sector" className="data-[state=active]:bg-primary data-[state=active]:text-white">
+              <BarChart3 className="h-4 w-4 mr-2" />
+              板块分析
+            </TabsTrigger>
+            <TabsTrigger value="diagnosis" className="data-[state=active]:bg-primary data-[state=active]:text-white">
+              <Zap className="h-4 w-4 mr-2" />
+              智能诊断
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="analysis" className="mt-0 space-y-6">
+            <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
           <div className="xl:col-span-8 space-y-6">
             <Card className={`border-none shadow-sm overflow-hidden ${fullscreenChart === 'trend' ? 'fixed inset-0 z-[100] m-0 rounded-none' : ''}`}>
               <CardHeader className="pb-2 border-b border-slate-50">
@@ -1455,20 +1931,6 @@ const App: React.FC = () => {
                 )}
               </CardContent>
             </Card>
-
-            <Card className="border-none shadow-sm">
-              <CardHeader className="pb-3 border-b border-slate-50">
-                <CardTitle className="text-base font-semibold">历史交易明细</CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <CoolStockTable 
-                  data={data} 
-                  onRowHover={setHoveredDate} 
-                  onRowClick={handleChartClick}
-                  lockedDates={lockedDates}
-                />
-              </CardContent>
-            </Card>
           </div>
 
           <div className="xl:col-span-4 space-y-6">
@@ -1591,8 +2053,44 @@ const App: React.FC = () => {
                 )}
               </CardContent>
             </Card>
+
+            {/* 筹码峰值追踪 */}
+            {data.length > 0 && (
+              <ChipPeakAnalysis 
+                data={data}
+                allSummaryStats={allSummaryStats}
+              />
+            )}
+
+            {/* 资金流向分析 */}
+            {stockCode && data.length > 0 && (
+              <MoneyFlowAnalysis stockCode={stockCode} />
+            )}
+
+            {/* 大盘情绪指数 */}
+            <MarketSentiment data={sentimentData} loading={sentimentLoading} />
           </div>
         </div>
+        </TabsContent>
+
+        <TabsContent value="sector" className="mt-0">
+          {extraLoading ? (
+            <div className="flex flex-col items-center justify-center p-20 bg-white rounded-xl shadow-sm border border-slate-100">
+              <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
+              <p className="text-slate-500">正在进行板块深度分析...</p>
+            </div>
+          ) : renderSectorAnalysis()}
+        </TabsContent>
+
+        <TabsContent value="diagnosis" className="mt-0">
+          {extraLoading ? (
+            <div className="flex flex-col items-center justify-center p-20 bg-white rounded-xl shadow-sm border border-slate-100">
+              <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
+              <p className="text-slate-500">AI 正在生成智能诊断报告...</p>
+            </div>
+          ) : renderSmartDiagnosis()}
+        </TabsContent>
+      </Tabs>
       </main>
 
       <footer className="border-t bg-white py-8">
